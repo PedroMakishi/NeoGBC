@@ -1,0 +1,6 @@
+{
+  "name": "NeoGBC",
+  "description": "Emulador nativo de Game Boy e Game Boy Color com biblioteca de capas automáticas, controles customizáveis, save states e engine própria.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
