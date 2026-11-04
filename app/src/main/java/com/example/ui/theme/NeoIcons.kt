@@ -552,4 +552,61 @@ object NeoIcons {
             close()
         }
     }
+
+    val Pause: ImageVector = buildIcon("Pause") {
+        path(fill = SolidColor(Color.White)) {
+            moveTo(6f, 19f)
+            horizontalLineToRelative(4f)
+            verticalLineTo(5f)
+            horizontalLineTo(6f)
+            verticalLineToRelative(14f)
+            close()
+            moveTo(14f, 5f)
+            verticalLineToRelative(14f)
+            horizontalLineToRelative(4f)
+            verticalLineTo(5f)
+            horizontalLineToRelative(-4f)
+            close()
+        }
+    }
+
+    val PlayArrow: ImageVector = buildIcon("PlayArrow") {
+        path(fill = SolidColor(Color.White)) {
+            moveTo(8f, 5f)
+            verticalLineToRelative(14f)
+            lineToRelative(11f, -7f)
+            close()
+        }
+    }
+
+    val CameraAlt: ImageVector = buildIcon("CameraAlt") {
+        path(fill = SolidColor(Color.White)) {
+            moveTo(9f, 2f)
+            lineTo(7.17f, 4f)
+            horizontalLineTo(4f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            verticalLineToRelative(12f)
+            curveToRelative(0f, 1.1f, 0.9f, 2f, 2f, 2f)
+            horizontalLineToRelative(16f)
+            curveToRelative(1.1f, 0f, 2f, -0.9f, 2f, -2f)
+            verticalLineTo(6f)
+            curveToRelative(0f, -1.1f, -0.9f, -2f, -2f, -2f)
+            horizontalLineToRelative(-3.17f)
+            lineTo(15f, 2f)
+            horizontalLineTo(9f)
+            close()
+            moveTo(12f, 17f)
+            curveToRelative(-2.76f, 0f, -5f, -2.24f, -5f, -5f)
+            reflectiveCurveToRelative(2.24f, -5f, 5f, -5f)
+            reflectiveCurveToRelative(5f, 2.24f, 5f, 5f)
+            reflectiveCurveToRelative(-2.24f, 5f, -5f, 5f)
+            close()
+            moveTo(12f, 9f)
+            curveToRelative(-1.66f, 0f, -3f, 1.34f, -3f, 3f)
+            reflectiveCurveToRelative(1.34f, 3f, 3f, 3f)
+            reflectiveCurveToRelative(3f, -1.34f, 3f, -3f)
+            reflectiveCurveToRelative(-1.34f, -3f, -3f, -3f)
+            close()
+        }
+    }
 }

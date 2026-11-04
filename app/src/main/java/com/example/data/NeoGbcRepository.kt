@@ -1,9 +1,13 @@
 package com.example.data
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.example.emulator.Cartridge
 import com.example.emulator.GbcPpu
@@ -12,6 +16,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class NeoGbcRepository(
     private val context: Context,
@@ -28,6 +35,7 @@ class NeoGbcRepository(
     private val savesInternalDir = File(context.filesDir, "saves").apply { mkdirs() }
     private val statesInternalDir = File(context.filesDir, "states").apply { mkdirs() }
     private val coversInternalDir = File(context.filesDir, "covers").apply { mkdirs() }
+    private val screenshotsInternalDir = File(context.filesDir, "screenshots").apply { mkdirs() }
 
     /**
      * Imports raw ROM or ZIP bytes with the given fileName directly into internal library storage.
@@ -451,6 +459,77 @@ class NeoGbcRepository(
     fun saveBatterySram(crc32Hex: String, data: ByteArray) {
         val file = File(savesInternalDir, "$crc32Hex.sav")
         file.writeBytes(data)
+    }
+
+    /**
+     * Captures a pure game-only screenshot from the 160x144 GBC/GB framebuffer (without any emulator UI or controls),
+     * upscales 4x (640x576) with nearest-neighbor pixel accuracy, and saves it automatically to the device Gallery
+     * (`Pictures/NeoGBC` via `MediaStore.Images.Media`).
+     */
+    suspend fun saveScreenshotToGallery(romTitle: String, frameBuffer: IntArray): File? = withContext(Dispatchers.IO) {
+        try {
+            val rawBitmap = Bitmap.createBitmap(
+                frameBuffer,
+                GbcPpu.SCREEN_WIDTH,
+                GbcPpu.SCREEN_HEIGHT,
+                Bitmap.Config.ARGB_8888
+            )
+            val upscaledBitmap = Bitmap.createScaledBitmap(
+                rawBitmap,
+                GbcPpu.SCREEN_WIDTH * 4,
+                GbcPpu.SCREEN_HEIGHT * 4,
+                false
+            )
+
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+            val safeTitle = romTitle
+                .replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                .replace(Regex("_+"), "_")
+                .trim('_')
+                .ifEmpty { "Game" }
+            val displayName = "NeoGBC_${safeTitle}_$timestamp.png"
+
+            // Always write to internal screenshots directory for instant verification and fallback
+            val internalFile = File(screenshotsInternalDir, displayName)
+            FileOutputStream(internalFile).use { out ->
+                upscaledBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+
+            // Export directly to Android Gallery (MediaStore.Images.Media -> Pictures/NeoGBC)
+            try {
+                val nowSec = System.currentTimeMillis() / 1000L
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(MediaStore.Images.Media.WIDTH, upscaledBitmap.width)
+                    put(MediaStore.Images.Media.HEIGHT, upscaledBitmap.height)
+                    put(MediaStore.Images.Media.DATE_ADDED, nowSec)
+                    put(MediaStore.Images.Media.DATE_MODIFIED, nowSec)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/NeoGBC")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                }
+                val resolver = context.contentResolver
+                val mediaUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                if (mediaUri != null) {
+                    resolver.openOutputStream(mediaUri)?.use { out ->
+                        upscaledBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        val readyValues = ContentValues().apply {
+                            put(MediaStore.Images.Media.IS_PENDING, 0)
+                        }
+                        resolver.update(mediaUri, readyValues, null, null)
+                    }
+                }
+            } catch (_: Exception) {
+            }
+
+            internalFile
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // Save States with PNG screenshot preview (dual-indexed by CRC32 and ROM ID for update resilience)

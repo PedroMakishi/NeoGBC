@@ -87,6 +87,16 @@ class MainActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
 
+    override fun onPause() {
+        super.onPause()
+        viewModel.onAppMinimized()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.onAppResumed()
+    }
+
     override fun onStop() {
         super.onStop()
         viewModel.flushActiveSessionToDisk()
@@ -178,6 +188,8 @@ fun NeoGbcAppContent(
                 cheats = cheats,
                 onTouchInputChanged = viewModel::updateTouchControls,
                 onToggleTurbo = viewModel::toggleTurboMode,
+                onTogglePause = viewModel::togglePause,
+                onTakeScreenshot = viewModel::captureGameScreenshotToGallery,
                 onToggleAudio = viewModel::toggleAudio,
                 onQuickSave = viewModel::performQuickSave,
                 onQuickLoad = viewModel::performQuickLoad,

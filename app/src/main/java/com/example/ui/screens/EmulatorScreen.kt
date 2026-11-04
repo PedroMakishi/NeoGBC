@@ -123,6 +123,8 @@ fun EmulatorScreen(
         select: Boolean
     ) -> Unit,
     onToggleTurbo: () -> Unit,
+    onTogglePause: () -> Unit = {},
+    onTakeScreenshot: () -> Unit = {},
     onToggleAudio: () -> Unit,
     onQuickSave: () -> Unit,
     onQuickLoad: () -> Unit,
@@ -296,6 +298,7 @@ fun EmulatorScreen(
         VirtualGamepadOverlay(
             layout = activeControlLayout,
             isEditing = sessionState.isEditingControls,
+            isPaused = sessionState.isPaused,
             isTurboActive = sessionState.isTurboEnabled,
             audioEnabled = sessionState.audioEnabled,
             gameRect = gameRectPx,
@@ -304,6 +307,8 @@ fun EmulatorScreen(
             onResetLayout = { onResetControlLayout(isLandscape) },
             onSaveLayout = onExitEditControls,
             onToggleTurbo = onToggleTurbo,
+            onTogglePause = onTogglePause,
+            onTakeScreenshot = onTakeScreenshot,
             onQuickSave = onQuickSave,
             onQuickLoad = onQuickLoad,
             onToggleAudio = onToggleAudio,

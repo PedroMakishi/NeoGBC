@@ -258,12 +258,18 @@ class ExampleRobolectricTest {
         }
         composeTestRule.onNodeWithTag("touch_layout_editor_panel").assertIsDisplayed()
 
-        // Tapping top-right buttons while editing controls must NOT trigger Turbo, Quick Save, or Audio Mute
+        // Tapping top-right buttons while editing controls must NOT trigger Turbo, Pause, Screenshot, Quick Save, or Audio Mute
         composeTestRule.onNodeWithTag("speed_toggle_button").performClick()
+        composeTestRule.onNodeWithTag("pause_toggle_button").performClick()
+        composeTestRule.onNodeWithTag("screenshot_button").performClick()
         composeTestRule.onNodeWithTag("quick_save_button").performClick()
         composeTestRule.onNodeWithTag("audio_toggle_button").performClick()
         composeTestRule.waitForIdle()
 
+        assertTrue(
+            "Pause must NOT be triggered while editing virtual controls",
+            !composeTestRule.activity.viewModel.sessionState.value.isPaused
+        )
         assertTrue(
             "Quick Save must NOT be triggered while editing virtual controls",
             composeTestRule.onAllNodesWithText("Estado salvo no Slot 0!").fetchSemanticsNodes().isEmpty()
@@ -277,8 +283,58 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("editor_chip_turbo").performClick()
         composeTestRule.onNodeWithTag("editor_opacity_slider").assertIsDisplayed()
 
-        // 7. Verify Save State & Battery Save (.sav) resilience across app updates / reconciliation
-        val repo = composeTestRule.activity.viewModel.repository
+        // Exit controls editor by clicking Salvar
+        composeTestRule.onNodeWithTag("save_controls_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            !composeTestRule.activity.viewModel.sessionState.value.isEditingControls
+        }
+        composeTestRule.waitForIdle()
+
+        // 7. Verify Pause & Screenshot buttons in the top-right cluster during normal gameplay
+        composeTestRule.onNodeWithTag("pause_toggle_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("screenshot_button").assertIsDisplayed()
+
+        // Manual Pause via top-right pause button
+        composeTestRule.onNodeWithTag("pause_toggle_button").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(
+            "Emulator must be paused after tapping pause_toggle_button",
+            composeTestRule.activity.viewModel.sessionState.value.isPaused
+        )
+
+        // Resume via top-right pause button
+        composeTestRule.onNodeWithTag("pause_toggle_button").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(
+            "Emulator must resume after tapping pause_toggle_button again",
+            !composeTestRule.activity.viewModel.sessionState.value.isPaused
+        )
+
+        // Game-only Screenshot via top-right screenshot button
+        composeTestRule.onNodeWithTag("screenshot_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.activity.viewModel.sessionState.value.toastMessage == "Captura de tela salva na Galeria!"
+        }
+        val screenshotsDir = java.io.File(composeTestRule.activity.filesDir, "screenshots")
+        val savedScreenshots = screenshotsDir.listFiles()?.filter { it.extension == "png" && it.length() > 0L }.orEmpty()
+        assertTrue("Game-only PNG screenshot must be generated and saved", savedScreenshots.isNotEmpty())
+
+        // 8. Verify Auto-Pause on Minimize and Auto-Resume on Return
+        val vm = composeTestRule.activity.viewModel
+        assertTrue("Game is running and unpaused before minimize", vm.sessionState.value.isRunning && !vm.sessionState.value.isPaused)
+        vm.onAppMinimized()
+        assertTrue(
+            "Game must automatically pause when emulator is minimized",
+            vm.sessionState.value.isPaused && vm.sessionState.value.isAutoPausedByLifecycle
+        )
+        vm.onAppResumed()
+        assertTrue(
+            "Game must automatically resume when user returns to the emulator",
+            !vm.sessionState.value.isPaused && !vm.sessionState.value.isAutoPausedByLifecycle
+        )
+
+        // 9. Verify Save State & Battery Save (.sav) resilience across app updates / reconciliation
+        val repo = vm.repository
         kotlinx.coroutines.runBlocking {
             repo.reconcilePersistedData()
             val recoveredSave = repo.getLatestSaveState(romId)

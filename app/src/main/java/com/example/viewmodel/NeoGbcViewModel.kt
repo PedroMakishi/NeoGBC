@@ -72,6 +72,7 @@ data class EmulatorSessionState(
     val activeRom: RomEntity? = null,
     val isRunning: Boolean = false,
     val isPaused: Boolean = false,
+    val isAutoPausedByLifecycle: Boolean = false,
     val speedMultiplier: Float = 1.0f, // 1.0f normal, 2.0f Turbo
     val audioEnabled: Boolean = true,
     val showFpsHud: Boolean = true,
@@ -390,6 +391,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                     activeRom = rom,
                     isRunning = true,
                     isPaused = false,
+                    isAutoPausedByLifecycle = false,
                     speedMultiplier = 1.0f,
                     frameTick = core.framesExecuted,
                     activeModal = EmulatorModal.NONE,
@@ -620,6 +622,121 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /**
+     * Toggles manual emulation pause/resume from the top-right action bar.
+     * Strictly blocked while editing virtual controls (`isEditingControls == true`).
+     */
+    fun togglePause() {
+        if (_sessionState.value.isEditingControls) return
+        _sessionState.update { current ->
+            if (!current.isRunning) return@update current
+            val nextPaused = !current.isPaused
+            if (nextPaused) {
+                pauseAudioTrackSafe()
+            } else {
+                resumeAudioTrackSafe()
+            }
+            current.copy(
+                isPaused = nextPaused,
+                isAutoPausedByLifecycle = false,
+                toastMessage = if (nextPaused) "Emulador Pausado" else "Jogo Retomado"
+            )
+        }
+    }
+
+    /**
+     * Captures a pure game-only screenshot (directly from the 160x144 GBC/GB framebuffer without
+     * any emulator UI or virtual controls) and saves it automatically to the phone's Gallery.
+     * Strictly blocked while editing virtual controls (`isEditingControls == true`).
+     */
+    fun captureGameScreenshotToGallery() {
+        if (_sessionState.value.isEditingControls) return
+        viewModelScope.launch {
+            val rom = _sessionState.value.activeRom ?: return@launch
+            val core = emulatorCore
+            val frameCopy = synchronized(currentFramePixels) {
+                if (core != null) {
+                    System.arraycopy(core.ppu.frontBuffer, 0, currentFramePixels, 0, currentFramePixels.size)
+                }
+                currentFramePixels.copyOf()
+            }
+            val savedFile = repository.saveScreenshotToGallery(rom.title, frameCopy)
+            _sessionState.update { current ->
+                current.copy(
+                    toastMessage = if (savedFile != null) {
+                        "Captura de tela salva na Galeria!"
+                    } else {
+                        "Erro ao salvar captura de tela"
+                    }
+                )
+            }
+        }
+    }
+
+    /**
+     * Automatically pauses an active game when the emulator app is minimized/backgrounded,
+     * and flushes battery SRAM to disk.
+     */
+    fun onAppMinimized() {
+        flushActiveSessionToDisk()
+        inputUp = false
+        inputDown = false
+        inputLeft = false
+        inputRight = false
+        inputA = false
+        inputB = false
+        inputStart = false
+        inputSelect = false
+        physicalTurboHeld = false
+
+        _sessionState.update { current ->
+            if (!current.isRunning) return@update current
+            pauseAudioTrackSafe()
+            if (!current.isPaused) {
+                current.copy(
+                    isPaused = true,
+                    isAutoPausedByLifecycle = true
+                )
+            } else {
+                current
+            }
+        }
+    }
+
+    /**
+     * Automatically resumes the game when the user returns to the emulator after minimizing,
+     * provided it was auto-paused by minimizing (and not manually paused by the user beforehand).
+     */
+    fun onAppResumed() {
+        _sessionState.update { current ->
+            if (current.isRunning && current.isAutoPausedByLifecycle) {
+                resumeAudioTrackSafe()
+                current.copy(
+                    isPaused = false,
+                    isAutoPausedByLifecycle = false,
+                    toastMessage = "Jogo retomado"
+                )
+            } else {
+                current
+            }
+        }
+    }
+
+    private fun pauseAudioTrackSafe() {
+        try {
+            audioTrack?.pause()
+            audioTrack?.flush()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun resumeAudioTrackSafe() {
+        try {
+            audioTrack?.play()
+        } catch (_: Exception) {
+        }
+    }
+
     fun toggleFpsHud() {
         _sessionState.update { current ->
             current.copy(showFpsHud = !current.showFpsHud)
@@ -665,16 +782,16 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun exitTouchControlsEditor() {
+        val snapshot = _sessionState.value
+        _sessionState.update { current ->
+            current.copy(
+                isEditingControls = false,
+                toastMessage = "Layout de controles salvo!"
+            )
+        }
         viewModelScope.launch {
-            val snapshot = _sessionState.value
             repository.saveControlLayout(snapshot.portraitLayout)
             repository.saveControlLayout(snapshot.landscapeLayout)
-            _sessionState.update { current ->
-                current.copy(
-                    isEditingControls = false,
-                    toastMessage = "Layout de controles salvo!"
-                )
-            }
         }
     }
 
@@ -789,6 +906,8 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 _sessionState.update { current ->
                     current.copy(
                         activeModal = EmulatorModal.NONE,
+                        isPaused = false,
+                        isAutoPausedByLifecycle = false,
                         frameTick = core.framesExecuted,
                         toastMessage = "Slot ${saveState.slotIndex} carregado com sucesso!"
                     )
@@ -868,6 +987,8 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         _sessionState.update { current ->
             current.copy(
                 activeModal = EmulatorModal.NONE,
+                isPaused = false,
+                isAutoPausedByLifecycle = false,
                 toastMessage = "Jogo reiniciado"
             )
         }
@@ -913,6 +1034,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 activeRom = null,
                 isRunning = false,
                 isPaused = false,
+                isAutoPausedByLifecycle = false,
                 activeModal = EmulatorModal.NONE,
                 isEditingControls = false
             )

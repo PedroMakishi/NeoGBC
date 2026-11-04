@@ -372,6 +372,7 @@ fun resolveNonOverlappingControlCenter(
 fun VirtualGamepadOverlay(
     layout: ControlLayoutEntity,
     isEditing: Boolean,
+    isPaused: Boolean,
     isTurboActive: Boolean,
     audioEnabled: Boolean,
     gameRect: Rect,
@@ -380,6 +381,8 @@ fun VirtualGamepadOverlay(
     onResetLayout: () -> Unit,
     onSaveLayout: () -> Unit,
     onToggleTurbo: () -> Unit,
+    onTogglePause: () -> Unit,
+    onTakeScreenshot: () -> Unit,
     onQuickSave: () -> Unit,
     onQuickLoad: () -> Unit,
     onToggleAudio: () -> Unit,
@@ -459,11 +462,11 @@ fun VirtualGamepadOverlay(
         val ssWpx = with(density) { ssWidthDp.toPx() }
         val ssHpx = with(density) { ssHeightDp.toPx() }
 
-        // Rectangular Top-Right Action Bar ([>> TURBO] [Save] [Load] [Audio])
-        val turboBarBaseW = 186.dp
-        val turboBarBaseH = 42.dp
-        val maxTurboScale = (usablePillarW / with(density) { turboBarBaseW.toPx() }).coerceIn(0.60f, 1.40f)
-        val effTurboScale = layout.turboScale.coerceIn(0.60f, maxTurboScale)
+        // Rectangular Top-Right Action Bar ([>> TURBO] [Pause] [Screenshot] [Save] [Load] [Audio])
+        val turboBarBaseW = 216.dp
+        val turboBarBaseH = 40.dp
+        val maxTurboScale = (usablePillarW / with(density) { turboBarBaseW.toPx() }).coerceIn(0.50f, 1.40f)
+        val effTurboScale = layout.turboScale.coerceIn(0.50f, maxTurboScale)
         val turboBarWidthDp = turboBarBaseW * effTurboScale
         val turboBarHeightDp = turboBarBaseH * effTurboScale
         val turboWpx = with(density) { turboBarWidthDp.toPx() }
@@ -859,7 +862,7 @@ fun VirtualGamepadOverlay(
                 )
             }
 
-            // 4. Rectangular Turbo & Quick Action Bar ([>> TURBO] [Save] [Load] [Audio])
+            // 4. Rectangular Turbo & Quick Action Bar ([>> TURBO] [Pause] [Screenshot] [Save] [Load] [Audio])
             // Exclusively during `isEditing == true`, click handlers are disabled so tapping/dragging
             // the top-right buttons edits them without EVER accidentally triggering their actions!
             Box(
@@ -887,23 +890,23 @@ fun VirtualGamepadOverlay(
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 3.dp * effTurboScale),
+                        .padding(horizontal = 2.dp * effTurboScale),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Rectangular TURBO Button (replaces both the old speed cycler and the circular Turbo button)
+                    // Rectangular TURBO Button
                     Box(
                         modifier = Modifier
-                            .width(64.dp * effTurboScale)
-                            .height(34.dp * effTurboScale)
-                            .clip(RoundedCornerShape(9.dp * effTurboScale))
+                            .width(52.dp * effTurboScale)
+                            .height(32.dp * effTurboScale)
+                            .clip(RoundedCornerShape(8.dp * effTurboScale))
                             .background(
                                 if (isTurboActive) CyberYellow else OledSurfaceVariant.copy(alpha = 0.95f)
                             )
                             .border(
                                 1.dp,
                                 CyberYellow.copy(alpha = 0.75f),
-                                RoundedCornerShape(9.dp * effTurboScale)
+                                RoundedCornerShape(8.dp * effTurboScale)
                             )
                             .then(
                                 if (!isEditing) {
@@ -921,30 +924,89 @@ fun VirtualGamepadOverlay(
                                 imageVector = NeoIcons.FastForward,
                                 contentDescription = "Modo Turbo",
                                 tint = if (isTurboActive) OledBlack else CyberYellow,
-                                modifier = Modifier.size(13.dp * effTurboScale)
+                                modifier = Modifier.size(11.dp * effTurboScale)
                             )
-                            Spacer(modifier = Modifier.width(2.dp * effTurboScale))
+                            Spacer(modifier = Modifier.width(1.5.dp * effTurboScale))
                             Text(
                                 text = "TURBO",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (isTurboActive) OledBlack else CyberYellow,
-                                fontSize = (9.5f * effTurboScale).coerceIn(7f, 12f).sp,
+                                fontSize = (8.5f * effTurboScale).coerceIn(6.5f, 11f).sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1
                             )
                         }
                     }
 
+                    // Pause / Resume Emulator Button
+                    Box(
+                        modifier = Modifier
+                            .width(30.dp * effTurboScale)
+                            .height(32.dp * effTurboScale)
+                            .clip(RoundedCornerShape(8.dp * effTurboScale))
+                            .background(
+                                if (isPaused) CyberYellow else OledSurfaceVariant.copy(alpha = 0.95f)
+                            )
+                            .border(
+                                1.dp,
+                                (if (isPaused) CyberYellow else NeonCyan).copy(alpha = 0.65f),
+                                RoundedCornerShape(8.dp * effTurboScale)
+                            )
+                            .then(
+                                if (!isEditing) {
+                                    Modifier.clickable { onTogglePause() }
+                                } else Modifier
+                            )
+                            .testTag("pause_toggle_button"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isPaused) NeoIcons.PlayArrow else NeoIcons.Pause,
+                            contentDescription = if (isPaused) "Retomar Emulador" else "Pausar Emulador",
+                            tint = if (isPaused) OledBlack else NeonCyan,
+                            modifier = Modifier.size(15.dp * effTurboScale)
+                        )
+                    }
+
+                    // Game-Only Screenshot to Gallery Button
+                    Box(
+                        modifier = Modifier
+                            .width(30.dp * effTurboScale)
+                            .height(32.dp * effTurboScale)
+                            .clip(RoundedCornerShape(8.dp * effTurboScale))
+                            .background(OledSurfaceVariant.copy(alpha = 0.95f))
+                            .border(
+                                1.dp,
+                                AtomicPurple.copy(alpha = 0.65f),
+                                RoundedCornerShape(8.dp * effTurboScale)
+                            )
+                            .then(
+                                if (!isEditing) {
+                                    Modifier.clickable { onTakeScreenshot() }
+                                } else Modifier
+                            )
+                            .testTag("screenshot_button"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = NeoIcons.CameraAlt,
+                            contentDescription = "Capturar Tela na Galeria",
+                            tint = AtomicPurple,
+                            modifier = Modifier.size(15.dp * effTurboScale)
+                        )
+                    }
+
                     // Quick Save Button
                     Box(
                         modifier = Modifier
-                            .size(34.dp * effTurboScale)
-                            .clip(RoundedCornerShape(9.dp * effTurboScale))
+                            .width(30.dp * effTurboScale)
+                            .height(32.dp * effTurboScale)
+                            .clip(RoundedCornerShape(8.dp * effTurboScale))
                             .background(OledSurfaceVariant.copy(alpha = 0.95f))
                             .border(
                                 1.dp,
                                 EmeraldSuccess.copy(alpha = 0.55f),
-                                RoundedCornerShape(9.dp * effTurboScale)
+                                RoundedCornerShape(8.dp * effTurboScale)
                             )
                             .then(
                                 if (!isEditing) {
@@ -958,20 +1020,21 @@ fun VirtualGamepadOverlay(
                             imageVector = NeoIcons.BookmarkAdd,
                             contentDescription = "Salvar Rápido",
                             tint = EmeraldSuccess,
-                            modifier = Modifier.size(16.dp * effTurboScale)
+                            modifier = Modifier.size(15.dp * effTurboScale)
                         )
                     }
 
                     // Quick Load Button
                     Box(
                         modifier = Modifier
-                            .size(34.dp * effTurboScale)
-                            .clip(RoundedCornerShape(9.dp * effTurboScale))
+                            .width(30.dp * effTurboScale)
+                            .height(32.dp * effTurboScale)
+                            .clip(RoundedCornerShape(8.dp * effTurboScale))
                             .background(OledSurfaceVariant.copy(alpha = 0.95f))
                             .border(
                                 1.dp,
                                 MatrixBlue.copy(alpha = 0.55f),
-                                RoundedCornerShape(9.dp * effTurboScale)
+                                RoundedCornerShape(8.dp * effTurboScale)
                             )
                             .then(
                                 if (!isEditing) {
@@ -985,20 +1048,21 @@ fun VirtualGamepadOverlay(
                             imageVector = NeoIcons.History,
                             contentDescription = "Carregar Rápido",
                             tint = MatrixBlue,
-                            modifier = Modifier.size(16.dp * effTurboScale)
+                            modifier = Modifier.size(15.dp * effTurboScale)
                         )
                     }
 
                     // Audio Toggle Button
                     Box(
                         modifier = Modifier
-                            .size(34.dp * effTurboScale)
-                            .clip(RoundedCornerShape(9.dp * effTurboScale))
+                            .width(30.dp * effTurboScale)
+                            .height(32.dp * effTurboScale)
+                            .clip(RoundedCornerShape(8.dp * effTurboScale))
                             .background(OledSurfaceVariant.copy(alpha = 0.95f))
                             .border(
                                 1.dp,
                                 (if (audioEnabled) NeonCyan else BerryMagenta).copy(alpha = 0.55f),
-                                RoundedCornerShape(9.dp * effTurboScale)
+                                RoundedCornerShape(8.dp * effTurboScale)
                             )
                             .then(
                                 if (!isEditing) {
@@ -1012,7 +1076,7 @@ fun VirtualGamepadOverlay(
                             imageVector = if (audioEnabled) NeoIcons.VolumeUp else NeoIcons.VolumeOff,
                             contentDescription = "Alternar Áudio",
                             tint = if (audioEnabled) NeonCyan else BerryMagenta,
-                            modifier = Modifier.size(16.dp * effTurboScale)
+                            modifier = Modifier.size(15.dp * effTurboScale)
                         )
                     }
                 }
@@ -1070,7 +1134,7 @@ private fun TouchLayoutEditorPanel(
     onSave: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val minScale = if (selectedGroup == EditableControlGroup.TURBO) 0.60f else 0.65f
+    val minScale = if (selectedGroup == EditableControlGroup.TURBO) 0.50f else 0.65f
     Column(
         modifier = modifier
             .widthIn(max = if (isLandscape) 370.dp else 440.dp)
