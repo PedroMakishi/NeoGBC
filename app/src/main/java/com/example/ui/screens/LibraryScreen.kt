@@ -77,11 +77,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.RomCoverArtView
 import com.example.data.RomEntity
+import com.example.data.SaveStateEntity
 import com.example.emulator.DmgPalettePreset
 import com.example.emulator.VideoFilterMode
 import com.example.ui.theme.AtomicPurple
 import com.example.ui.theme.BerryMagenta
 import com.example.ui.theme.CyberYellow
+import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.MatrixBlue
 import com.example.ui.theme.NeoIcons
 import com.example.ui.theme.NeonCyan
@@ -106,6 +108,7 @@ fun LibraryScreen(
     onAddDirectoryClick: () -> Unit,
     onImportRomFileClick: () -> Unit,
     onPlayRom: (RomEntity) -> Unit,
+    onContinueRom: (RomEntity) -> Unit = {},
     onToggleFavorite: (RomEntity) -> Unit,
     onOpenCoverMenu: (RomEntity) -> Unit,
     onDismissCoverMenu: () -> Unit,
@@ -442,9 +445,12 @@ fun LibraryScreen(
             }
 
             items(uiState.roms, key = { it.id }) { rom ->
+                val latestSave = uiState.latestSaveByRomId[rom.id]
                 RomLibraryCard(
                     rom = rom,
+                    latestSave = latestSave,
                     onPlayClick = { onPlayRom(rom) },
+                    onContinueClick = { onContinueRom(rom) },
                     onFavoriteClick = { onToggleFavorite(rom) },
                     onCoverOptionsClick = { onOpenCoverMenu(rom) }
                 )
@@ -954,7 +960,9 @@ private fun ScannedDirectoriesStrip(
 @Composable
 private fun RomLibraryCard(
     rom: RomEntity,
+    latestSave: SaveStateEntity?,
     onPlayClick: () -> Unit,
+    onContinueClick: () -> Unit,
     onFavoriteClick: () -> Unit,
     onCoverOptionsClick: () -> Unit
 ) {
@@ -1045,46 +1053,119 @@ private fun RomLibraryCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val minutes = (rom.totalPlayTimeSeconds / 60L)
+
+                val minutes = (rom.totalPlayTimeSeconds / 60L)
+                if (latestSave != null) {
+                    val slotLabel = if (latestSave.slotIndex == 0) "Quick Save" else "Slot ${latestSave.slotIndex}"
                     Text(
-                        text = if (minutes > 0) "${minutes}m jogados" else "Pronto",
+                        text = if (minutes > 0) "${minutes}m jogados • $slotLabel" else "Salvo • $slotLabel",
                         style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
+                        color = EmeraldSuccess,
                         fontSize = 10.sp,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        overflow = TextOverflow.Ellipsis
                     )
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
+                    Spacer(modifier = Modifier.height(6.dp))
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(NeonCyan.copy(alpha = 0.18f))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Jogar",
-                            tint = NeonCyan,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .weight(1.25f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(EmeraldSuccess.copy(alpha = 0.22f))
+                                .border(1.dp, EmeraldSuccess.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                                .testTag("continue_rom_btn_${rom.id}")
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { onContinueClick() }
+                                .padding(horizontal = 6.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Continuar",
+                                tint = EmeraldSuccess,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = "CONTINUAR",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = EmeraldSuccess,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .weight(0.85f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(NeonCyan.copy(alpha = 0.14f))
+                                .testTag("play_rom_btn_${rom.id}")
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { onPlayClick() }
+                                .padding(horizontal = 6.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                text = "JOGAR",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NeonCyan,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text(
-                            text = "JOGAR",
+                            text = if (minutes > 0) "${minutes}m jogados" else "Pronto",
                             style = MaterialTheme.typography.labelSmall,
-                            color = NeonCyan,
-                            fontWeight = FontWeight.Bold,
+                            color = TextSecondary,
+                            fontSize = 10.sp,
                             maxLines = 1,
-                            softWrap = false
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(NeonCyan.copy(alpha = 0.18f))
+                                .testTag("play_rom_btn_${rom.id}")
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { onPlayClick() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Jogar",
+                                tint = NeonCyan,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "JOGAR",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = NeonCyan,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }

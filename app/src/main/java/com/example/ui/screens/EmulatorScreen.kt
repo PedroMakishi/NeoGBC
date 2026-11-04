@@ -697,6 +697,11 @@ private fun QuickMenuButton(
     }
 }
 
+private sealed interface SaveStateConfirmAction {
+    data class Overwrite(val slotIndex: Int, val slotTitle: String) : SaveStateConfirmAction
+    data class Delete(val slotTitle: String, val existing: SaveStateEntity) : SaveStateConfirmAction
+}
+
 @Composable
 private fun SaveStatesSheet(
     saveStates: List<SaveStateEntity>,
@@ -706,6 +711,7 @@ private fun SaveStatesSheet(
     onDeleteState: (SaveStateEntity) -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("dd/MM HH:mm:ss", Locale.getDefault()) }
+    var pendingConfirmAction by remember { mutableStateOf<SaveStateConfirmAction?>(null) }
 
     NeoGbcModalOverlay(onDismiss = onDismiss) {
         Column(
@@ -743,6 +749,87 @@ private fun SaveStatesSheet(
                 }
             }
             Spacer(modifier = Modifier.height(10.dp))
+
+            val confirmAction = pendingConfirmAction
+            if (confirmAction != null) {
+                val isOverwrite = confirmAction is SaveStateConfirmAction.Overwrite
+                val dialogTitle = when (confirmAction) {
+                    is SaveStateConfirmAction.Overwrite -> "Sobrescrever ${confirmAction.slotTitle}?"
+                    is SaveStateConfirmAction.Delete -> "Excluir ${confirmAction.slotTitle}?"
+                }
+                val dialogBody = when (confirmAction) {
+                    is SaveStateConfirmAction.Overwrite ->
+                        "Já existe um save gravado no ${confirmAction.slotTitle}. Deseja sobrescrever o save anterior com o progresso atual?"
+                    is SaveStateConfirmAction.Delete ->
+                        "Deseja realmente apagar o save do ${confirmAction.slotTitle}? Esta ação não poderá ser desfeita."
+                }
+                val accentColor = if (isOverwrite) NeonCyan else BerryMagenta
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(OledSurfaceVariant)
+                        .border(1.5.dp, accentColor.copy(alpha = 0.75f), RoundedCornerShape(14.dp))
+                        .padding(16.dp)
+                        .testTag("save_state_confirm_dialog"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = dialogTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = accentColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = dialogBody,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary,
+                        fontSize = 13.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { pendingConfirmAction = null },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("cancel_save_state_action_btn")
+                        ) {
+                            Text("Cancelar", color = TextSecondary, fontWeight = FontWeight.Bold)
+                        }
+                        Button(
+                            onClick = {
+                                when (confirmAction) {
+                                    is SaveStateConfirmAction.Overwrite -> {
+                                        onSaveSlot(confirmAction.slotIndex, confirmAction.slotTitle)
+                                    }
+                                    is SaveStateConfirmAction.Delete -> {
+                                        onDeleteState(confirmAction.existing)
+                                    }
+                                }
+                                pendingConfirmAction = null
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = accentColor,
+                                contentColor = OledBlack
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("confirm_save_state_action_btn")
+                        ) {
+                            Text(
+                                text = if (isOverwrite) "Sobrescrever" else "Excluir",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+            }
 
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -817,7 +904,13 @@ private fun SaveStatesSheet(
 
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Button(
-                                onClick = { onSaveSlot(slotIdx, slotTitle) },
+                                onClick = {
+                                    if (slotIdx != 0 && existing != null) {
+                                        pendingConfirmAction = SaveStateConfirmAction.Overwrite(slotIdx, slotTitle)
+                                    } else {
+                                        onSaveSlot(slotIdx, slotTitle)
+                                    }
+                                },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = NeonCyan,
                                     contentColor = OledBlack
@@ -840,8 +933,16 @@ private fun SaveStatesSheet(
                                 }
 
                                 IconButton(
-                                    onClick = { onDeleteState(existing) },
-                                    modifier = Modifier.size(34.dp)
+                                    onClick = {
+                                        if (slotIdx != 0) {
+                                            pendingConfirmAction = SaveStateConfirmAction.Delete(slotTitle, existing)
+                                        } else {
+                                            onDeleteState(existing)
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .testTag("delete_slot_btn_$slotIdx")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Delete,

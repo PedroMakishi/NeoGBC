@@ -17,3 +17,16 @@ O instalador pronto (**`NeoGBC.apk`**) já está incluído diretamente na raiz d
 1. Extraia o arquivo `.zip` baixado do GitHub no gerenciador de arquivos do seu celular.
 2. Logo na pasta principal extraída, toque no arquivo **`NeoGBC.apk`** para instalar o aplicativo.
 *(Se o Android solicitar permissão para instalar apps daquela fonte, ative a chave e confirme).*
+
+---
+
+## 🔄 Como Atualizar o Aplicativo (Mantendo Todos os Seus Saves)
+
+Sempre que novos commits ou melhorias forem adicionados ao repositório, o arquivo **`NeoGBC.apk`** na raiz do projeto já estará atualizado com a versão mais recente. Para atualizar no seu celular **sem perder nenhum progresso**:
+
+1. **NÃO desinstale a versão anterior do NeoGBC** antes de atualizar *(no Android, desinstalar um aplicativo apaga a pasta interna onde ficam os seus saves)*.
+2. Baixe o novo arquivo **[`NeoGBC.apk`](./NeoGBC.apk)** atualizado do repositório (pela **Opção 1** ou **Opção 2** acima).
+3. Abra o novo `NeoGBC.apk` baixado no celular. O Android reconhecerá automaticamente a assinatura do app instalado e perguntará: ***"Deseja atualizar este aplicativo?"***.
+4. Toque em **Atualizar** (ou **Instalar**).
+5. Abra o **NeoGBC**: toda a sua biblioteca de jogos, **Save States (`Quick Save` e `Slots 1 a 8`)** e **Saves de Bateria (`.sav`)** da versão anterior serão preservados e reconectados automaticamente — basta tocar em **▶ CONTINUAR** no card do seu jogo para retomar exatamente de onde parou!
+

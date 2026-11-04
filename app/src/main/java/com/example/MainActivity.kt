@@ -87,6 +87,11 @@ class MainActivity : ComponentActivity() {
         return super.onKeyDown(keyCode, event)
     }
 
+    override fun onStop() {
+        super.onStop()
+        viewModel.flushActiveSessionToDisk()
+    }
+
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         if (viewModel.handlePhysicalKeyEvent(keyCode, false)) {
             return true
@@ -207,7 +212,8 @@ fun NeoGbcAppContent(
                 onImportRomFileClick = {
                     romFilePickerLauncher.launch(arrayOf("*/*"))
                 },
-                onPlayRom = viewModel::launchRom,
+                onPlayRom = { rom -> viewModel.launchRom(rom, loadLatestSave = false) },
+                onContinueRom = viewModel::continueRom,
                 onToggleFavorite = viewModel::toggleFavorite,
                 onOpenCoverMenu = viewModel::openCoverMenuForRom,
                 onDismissCoverMenu = { viewModel.openCoverMenuForRom(null) },

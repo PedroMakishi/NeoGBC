@@ -18,6 +18,7 @@ class NeoGbcRepository(
     private val dao: NeoGbcDao
 ) {
     val allRoms: Flow<List<RomEntity>> = dao.observeAllRoms()
+    val allSaveStates: Flow<List<SaveStateEntity>> = dao.observeAllSaveStates()
     val scannedDirectories: Flow<List<ScannedDirectoryEntity>> = dao.observeDirectories()
 
     fun observeSaveStates(romId: Long): Flow<List<SaveStateEntity>> = dao.observeSaveStatesForRom(romId)
@@ -44,11 +45,18 @@ class NeoGbcRepository(
             localFile.writeBytes(romBytes)
 
             val existing = dao.getAllRomsOnce().firstOrNull {
-                it.fileName.equals(fileName, ignoreCase = true) ||
-                    (it.crc32Hex == header.crc32Hex && it.title.equals(title, ignoreCase = true))
+                it.crc32Hex.equals(header.crc32Hex, ignoreCase = true) ||
+                    it.fileName.equals(fileName, ignoreCase = true)
             }
             if (existing != null) {
-                return@withContext existing
+                val repaired = if (!File(existing.uriOrAssetPath).exists()) {
+                    existing.copy(uriOrAssetPath = localFile.absolutePath, isBundledAsset = false)
+                        .also { dao.updateRom(it) }
+                } else {
+                    existing
+                }
+                reconcileSaveStatesForRom(repaired)
+                return@withContext repaired
             }
 
             val autoCover = CoverArtProvider.buildAutomaticCoverUrl(fileName, header.title, header.isCgbSupported)
@@ -66,7 +74,9 @@ class NeoGbcRepository(
                 autoCoverUrl = autoCover
             )
             val newId = dao.insertRom(entity)
-            entity.copy(id = newId)
+            val inserted = entity.copy(id = newId)
+            reconcileSaveStatesForRom(inserted)
+            inserted
         } catch (_: Exception) {
             null
         }
@@ -114,11 +124,18 @@ class NeoGbcRepository(
             localFile.writeBytes(romBytes)
 
             val existing = dao.getAllRomsOnce().firstOrNull {
-                it.fileName.equals(fileName, ignoreCase = true) ||
-                    (!it.isBundledAsset && it.crc32Hex == header.crc32Hex && it.title.equals(title, ignoreCase = true))
+                it.crc32Hex.equals(header.crc32Hex, ignoreCase = true) ||
+                    it.fileName.equals(fileName, ignoreCase = true)
             }
             if (existing != null) {
-                return@withContext existing
+                val repaired = if (!File(existing.uriOrAssetPath).exists()) {
+                    existing.copy(uriOrAssetPath = localFile.absolutePath, isBundledAsset = false)
+                        .also { dao.updateRom(it) }
+                } else {
+                    existing
+                }
+                reconcileSaveStatesForRom(repaired)
+                return@withContext repaired
             }
 
             val autoCover = CoverArtProvider.buildAutomaticCoverUrl(fileName, header.title, header.isCgbSupported)
@@ -137,7 +154,9 @@ class NeoGbcRepository(
                 autoCoverUrl = autoCover
             )
             val newId = dao.insertRom(entity)
-            entity.copy(id = newId)
+            val inserted = entity.copy(id = newId)
+            reconcileSaveStatesForRom(inserted)
+            inserted
         } catch (_: Exception) {
             null
         }
@@ -228,15 +247,24 @@ class NeoGbcRepository(
             val header = Cartridge.parseHeader(romBytes)
             val title = CoverArtProvider.formatDisplayTitle(fileName, header.title)
 
-            val existing = dao.getAllRomsOnce().firstOrNull {
-                it.fileName.equals(fileName, ignoreCase = true) ||
-                    (!it.isBundledAsset && it.crc32Hex == header.crc32Hex && it.title.equals(title, ignoreCase = true))
-            }
-            if (existing != null) return existing
-
             val safeName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
             val localFile = File(romsInternalDir, "${header.crc32Hex}_$safeName")
             localFile.writeBytes(romBytes)
+
+            val existing = dao.getAllRomsOnce().firstOrNull {
+                it.crc32Hex.equals(header.crc32Hex, ignoreCase = true) ||
+                    it.fileName.equals(fileName, ignoreCase = true)
+            }
+            if (existing != null) {
+                val repaired = if (!File(existing.uriOrAssetPath).exists()) {
+                    existing.copy(uriOrAssetPath = localFile.absolutePath, isBundledAsset = false)
+                        .also { dao.updateRom(it) }
+                } else {
+                    existing
+                }
+                reconcileSaveStatesForRom(repaired)
+                return repaired
+            }
 
             val autoCover = CoverArtProvider.buildAutomaticCoverUrl(fileName, header.title, header.isCgbSupported)
 
@@ -254,7 +282,9 @@ class NeoGbcRepository(
                 autoCoverUrl = autoCover
             )
             val id = dao.insertRom(entity)
-            entity.copy(id = id)
+            val inserted = entity.copy(id = id)
+            reconcileSaveStatesForRom(inserted)
+            inserted
         } catch (_: Exception) {
             null
         }
@@ -400,8 +430,15 @@ class NeoGbcRepository(
                 File(rom.uriOrAssetPath).delete()
             }
             rom.customCoverUri?.let { File(it).delete() }
+            for (slot in 0..8) {
+                File(statesInternalDir, "rom_${rom.id}_slot_${slot}.ngbc").delete()
+                File(statesInternalDir, "rom_${rom.id}_slot_${slot}.png").delete()
+                File(statesInternalDir, "crc_${rom.crc32Hex}_slot_${slot}.ngbc").delete()
+                File(statesInternalDir, "crc_${rom.crc32Hex}_slot_${slot}.png").delete()
+            }
         } catch (_: Exception) {
         }
+        dao.deleteSaveStatesForRom(rom.id)
         dao.deleteRom(rom.id)
     }
 
@@ -416,7 +453,7 @@ class NeoGbcRepository(
         file.writeBytes(data)
     }
 
-    // Save States with PNG screenshot preview
+    // Save States with PNG screenshot preview (dual-indexed by CRC32 and ROM ID for update resilience)
     suspend fun writeSaveState(
         romId: Long,
         slotIndex: Int,
@@ -426,10 +463,17 @@ class NeoGbcRepository(
         playTimeSeconds: Long
     ): SaveStateEntity = withContext(Dispatchers.IO) {
         val existing = dao.getSaveState(romId, slotIndex)
-        val stateFile = File(statesInternalDir, "rom_${romId}_slot_${slotIndex}.ngbc")
+        val rom = dao.getRomById(romId)
+        val baseKey = if (rom != null && rom.crc32Hex.isNotBlank()) {
+            "crc_${rom.crc32Hex}_slot_${slotIndex}"
+        } else {
+            "rom_${romId}_slot_${slotIndex}"
+        }
+
+        val stateFile = File(statesInternalDir, "$baseKey.ngbc")
         stateFile.writeBytes(stateBytes)
 
-        val previewFile = File(statesInternalDir, "rom_${romId}_slot_${slotIndex}.png")
+        val previewFile = File(statesInternalDir, "$baseKey.png")
         try {
             val bmp = Bitmap.createBitmap(
                 frameBuffer,
@@ -441,6 +485,18 @@ class NeoGbcRepository(
                 bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
         } catch (_: Exception) {
+        }
+
+        // Remove legacy duplicate file if we wrote to the CRC-keyed file
+        if (baseKey.startsWith("crc_")) {
+            val legacyState = File(statesInternalDir, "rom_${romId}_slot_${slotIndex}.ngbc")
+            val legacyPreview = File(statesInternalDir, "rom_${romId}_slot_${slotIndex}.png")
+            if (legacyState.exists() && legacyState.absolutePath != stateFile.absolutePath) {
+                legacyState.delete()
+            }
+            if (legacyPreview.exists() && legacyPreview.absolutePath != previewFile.absolutePath) {
+                legacyPreview.delete()
+            }
         }
 
         val entity = SaveStateEntity(
@@ -457,15 +513,191 @@ class NeoGbcRepository(
         entity.copy(id = id)
     }
 
+    private suspend fun resolveSaveStateFile(saveState: SaveStateEntity): File? {
+        val primary = File(saveState.stateFilePath)
+        if (primary.exists() && primary.length() > 0L) return primary
+
+        val rom = dao.getRomById(saveState.romId)
+        if (rom != null && rom.crc32Hex.isNotBlank()) {
+            val crcFile = File(statesInternalDir, "crc_${rom.crc32Hex}_slot_${saveState.slotIndex}.ngbc")
+            if (crcFile.exists() && crcFile.length() > 0L) return crcFile
+        }
+
+        val legacyFile = File(statesInternalDir, "rom_${saveState.romId}_slot_${saveState.slotIndex}.ngbc")
+        if (legacyFile.exists() && legacyFile.length() > 0L) return legacyFile
+
+        return null
+    }
+
+    suspend fun getLatestSaveState(romId: Long): SaveStateEntity? = withContext(Dispatchers.IO) {
+        val rom = dao.getRomById(romId)
+        if (rom != null) {
+            reconcileSaveStatesForRom(rom)
+        }
+        val latest = dao.getLatestSaveStateForRom(romId) ?: return@withContext null
+        val resolvedFile = resolveSaveStateFile(latest) ?: return@withContext null
+        if (resolvedFile.absolutePath != latest.stateFilePath) {
+            val updated = latest.copy(stateFilePath = resolvedFile.absolutePath)
+            dao.insertSaveState(updated)
+            updated
+        } else {
+            latest
+        }
+    }
+
+    suspend fun touchSaveStateTimestamp(saveState: SaveStateEntity) = withContext(Dispatchers.IO) {
+        dao.insertSaveState(saveState.copy(timestamp = System.currentTimeMillis()))
+    }
+
     suspend fun readSaveStateBytes(saveState: SaveStateEntity): ByteArray? = withContext(Dispatchers.IO) {
-        val file = File(saveState.stateFilePath)
-        if (file.exists()) file.readBytes() else null
+        val file = resolveSaveStateFile(saveState)
+        if (file != null && file.exists()) file.readBytes() else null
     }
 
     suspend fun deleteSaveState(saveState: SaveStateEntity) = withContext(Dispatchers.IO) {
         File(saveState.stateFilePath).delete()
         saveState.previewImagePath?.let { File(it).delete() }
+        val rom = dao.getRomById(saveState.romId)
+        if (rom != null) {
+            File(statesInternalDir, "crc_${rom.crc32Hex}_slot_${saveState.slotIndex}.ngbc").delete()
+            File(statesInternalDir, "crc_${rom.crc32Hex}_slot_${saveState.slotIndex}.png").delete()
+        }
+        File(statesInternalDir, "rom_${saveState.romId}_slot_${saveState.slotIndex}.ngbc").delete()
+        File(statesInternalDir, "rom_${saveState.romId}_slot_${saveState.slotIndex}.png").delete()
         dao.deleteSaveState(saveState.id)
+    }
+
+    /**
+     * Reconciles all persisted ROM files and Save State files in internal storage with the Room database.
+     * Guarantees that app updates, database migrations, or ROM re-imports never orphan or lose any user save.
+     */
+    suspend fun reconcilePersistedData() = withContext(Dispatchers.IO) {
+        try {
+            // 1. Recover any internal ROM files on disk not currently indexed in Room
+            val internalRomFiles = romsInternalDir.listFiles()?.filter { it.isFile && it.length() >= 0x150 } ?: emptyList()
+            val currentRoms = dao.getAllRomsOnce().toMutableList()
+
+            for (romFile in internalRomFiles) {
+                try {
+                    val rawBytes = romFile.readBytes()
+                    val romBytes = Cartridge.extractRomIfZip(rawBytes)
+                    if (romBytes.size < 0x150) continue
+                    val header = Cartridge.parseHeader(romBytes)
+                    val matchingRom = currentRoms.firstOrNull {
+                        it.crc32Hex.equals(header.crc32Hex, ignoreCase = true)
+                    }
+                    if (matchingRom == null) {
+                        val rawFileName = romFile.name.substringAfter('_', romFile.name)
+                        val title = CoverArtProvider.formatDisplayTitle(rawFileName, header.title)
+                        val autoCover = CoverArtProvider.buildAutomaticCoverUrl(rawFileName, header.title, header.isCgbSupported)
+                        val entity = RomEntity(
+                            title = title,
+                            headerTitle = header.title,
+                            fileName = rawFileName,
+                            uriOrAssetPath = romFile.absolutePath,
+                            isBundledAsset = false,
+                            isCgb = header.isCgbSupported,
+                            cartridgeType = header.cartridgeTypeName,
+                            romSizeBytes = header.romSizeBytes,
+                            ramSizeBytes = header.ramBytesSize,
+                            crc32Hex = header.crc32Hex,
+                            autoCoverUrl = autoCover,
+                            addedTimestamp = romFile.lastModified()
+                        )
+                        val id = dao.insertRom(entity)
+                        currentRoms.add(entity.copy(id = id))
+                    } else if (!matchingRom.isBundledAsset && !File(matchingRom.uriOrAssetPath).exists()) {
+                        val repaired = matchingRom.copy(uriOrAssetPath = romFile.absolutePath)
+                        dao.updateRom(repaired)
+                    }
+                } catch (_: Exception) {
+                }
+            }
+
+            // 2. Reconcile Save States for every ROM in the library
+            val allRomsNow = dao.getAllRomsOnce()
+            for (rom in allRomsNow) {
+                reconcileSaveStatesForRom(rom, allRomsNow.size == 1)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private suspend fun reconcileSaveStatesForRom(rom: RomEntity, isOnlyRomInLibrary: Boolean = false) {
+        try {
+            for (slot in 0..8) {
+                val crcStateFile = File(statesInternalDir, "crc_${rom.crc32Hex}_slot_${slot}.ngbc")
+                val crcPreviewFile = File(statesInternalDir, "crc_${rom.crc32Hex}_slot_${slot}.png")
+                val legacyStateFile = File(statesInternalDir, "rom_${rom.id}_slot_${slot}.ngbc")
+                val legacyPreviewFile = File(statesInternalDir, "rom_${rom.id}_slot_${slot}.png")
+
+                // If legacy file exists (from Versão 01..11), migrate/copy to CRC-indexed file so it is forever bound to the ROM's CRC32
+                if (legacyStateFile.exists() && legacyStateFile.length() > 0L && !crcStateFile.exists()) {
+                    try {
+                        legacyStateFile.copyTo(crcStateFile, overwrite = false)
+                        if (legacyPreviewFile.exists() && !crcPreviewFile.exists()) {
+                            legacyPreviewFile.copyTo(crcPreviewFile, overwrite = false)
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+
+                // Also check if there is an orphaned legacy rom_<anyId>_slot_<slot>.ngbc when this is the only ROM in the library
+                val singleRomOrphanState = if (!crcStateFile.exists() && !legacyStateFile.exists() && isOnlyRomInLibrary) {
+                    statesInternalDir.listFiles()?.firstOrNull {
+                        it.isFile && it.name.matches(Regex("rom_\\d+_slot_${slot}\\.ngbc")) && it.length() > 0L
+                    }
+                } else {
+                    null
+                }
+                if (singleRomOrphanState != null && !crcStateFile.exists()) {
+                    try {
+                        singleRomOrphanState.copyTo(crcStateFile, overwrite = false)
+                        val orphanPreview = File(statesInternalDir, singleRomOrphanState.nameWithoutExtension + ".png")
+                        if (orphanPreview.exists() && !crcPreviewFile.exists()) {
+                            orphanPreview.copyTo(crcPreviewFile, overwrite = false)
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+
+                val activeStateFile = when {
+                    crcStateFile.exists() && crcStateFile.length() > 0L -> crcStateFile
+                    legacyStateFile.exists() && legacyStateFile.length() > 0L -> legacyStateFile
+                    else -> null
+                } ?: continue
+
+                val activePreviewFile = when {
+                    crcPreviewFile.exists() -> crcPreviewFile
+                    legacyPreviewFile.exists() -> legacyPreviewFile
+                    else -> null
+                }
+
+                val existingEntity = dao.getSaveState(rom.id, slot)
+                if (existingEntity == null) {
+                    val defaultLabel = if (slot == 0) "Quick Save" else "Slot $slot"
+                    dao.insertSaveState(
+                        SaveStateEntity(
+                            romId = rom.id,
+                            slotIndex = slot,
+                            label = defaultLabel,
+                            stateFilePath = activeStateFile.absolutePath,
+                            previewImagePath = activePreviewFile?.absolutePath,
+                            playTimeSeconds = rom.totalPlayTimeSeconds,
+                            timestamp = activeStateFile.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+                        )
+                    )
+                } else if (!File(existingEntity.stateFilePath).exists()) {
+                    dao.insertSaveState(
+                        existingEntity.copy(
+                            stateFilePath = activeStateFile.absolutePath,
+                            previewImagePath = activePreviewFile?.absolutePath ?: existingEntity.previewImagePath
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
     }
 
     // Cheats management

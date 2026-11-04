@@ -7,6 +7,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -59,8 +60,12 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("close_library_settings_btn").performClick()
         composeTestRule.waitForIdle()
 
+        val romId1 = composeTestRule.activity.viewModel.libraryState.value.roms
+            .first { it.title.contains("NeoGBC Test Demo", ignoreCase = true) }
+            .id
+
         // 2. Open Game Options menu (3 dots on the ROM card) and test Rename Game (and file on device)
-        composeTestRule.onNodeWithTag("cover_options_btn_1").performClick()
+        composeTestRule.onNodeWithTag("cover_options_btn_$romId1").performClick()
         composeTestRule.waitUntil(timeoutMillis = 5000L) {
             composeTestRule
                 .onAllNodesWithTag("rename_rom_button")
@@ -85,7 +90,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `emulator screen rectangular Turbo button works in gameplay and blocks accidental actions during control editing`() {
+    fun `emulator screen rectangular Turbo button, control editor lock, save states confirmation, and library Continuar flow`() {
         composeTestRule.activity.viewModel.importRawRomBytes(
             "NeoGBC Test Demo.gbc",
             ExampleUnitTest.createSyntheticGbcRomZipBytes()
@@ -99,7 +104,16 @@ class ExampleRobolectricTest {
                 .isNotEmpty()
         }
 
-        // Launch the ROM
+        val romId = composeTestRule.activity.viewModel.libraryState.value.roms.first().id
+
+        // 1. Before any save exists, "CONTINUAR" button must NOT be displayed on the library card
+        assertTrue(
+            "Continuar button must NOT appear before the user has made a save",
+            composeTestRule.onAllNodesWithTag("continue_rom_btn_$romId", useUnmergedTree = true).fetchSemanticsNodes().isEmpty()
+        )
+        composeTestRule.onNodeWithTag("play_rom_btn_$romId", useUnmergedTree = true).assertExists()
+
+        // 2. Launch the ROM
         composeTestRule.onNodeWithText("NeoGBC Test Demo", substring = true).performClick()
 
         composeTestRule.waitUntil(timeoutMillis = 5000L) {
@@ -131,7 +145,103 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("speed_toggle_button").performClick()
         composeTestRule.waitForIdle()
 
-        // Open Quick Menu from top-left 3-bar button and enter "Editar Controles na Tela"
+        // 3. Open Quick Menu -> Save States Manager and verify confirmation rules
+        composeTestRule.onNodeWithTag("emulator_menu_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("menu_save_states_btn").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("menu_save_states_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("save_states_sheet").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Quick Save (Slot 0) saves and overwrites WITHOUT confirmation dialog
+        composeTestRule.onNodeWithTag("save_slot_btn_0").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("save_states_sheet").fetchSemanticsNodes().isEmpty()
+        }
+        composeTestRule.onNodeWithTag("emulator_menu_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("menu_save_states_btn").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("menu_save_states_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("load_slot_btn_0").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("save_slot_btn_0").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("save_states_sheet").fetchSemanticsNodes().isEmpty()
+        }
+
+        // Save to empty manual Slot 1 (no confirmation on empty slot)
+        composeTestRule.onNodeWithTag("emulator_menu_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("menu_save_states_btn").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("menu_save_states_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("save_slot_btn_1").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("save_slot_btn_1").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("save_states_sheet").fetchSemanticsNodes().isEmpty()
+        }
+
+        // Re-open Save States: Slot 1 now has a save -> pressing "Salvar" on Slot 1 MUST ask for confirmation
+        composeTestRule.onNodeWithTag("emulator_menu_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("menu_save_states_btn").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("menu_save_states_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("load_slot_btn_1").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("save_slot_btn_1").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("save_state_confirm_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Sobrescrever Slot 1?", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cancel_save_state_action_btn").performClick()
+        composeTestRule.waitForIdle()
+
+        // Pressing trash icon on Slot 1 MUST ask for deletion confirmation
+        composeTestRule.onNodeWithTag("delete_slot_btn_1").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("save_state_confirm_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Excluir Slot 1?", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("cancel_save_state_action_btn").performClick()
+        composeTestRule.waitForIdle()
+
+        // Confirm overwrite on Slot 1 so it becomes the latest save
+        composeTestRule.onNodeWithTag("save_slot_btn_1").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("confirm_save_state_action_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("save_states_sheet").fetchSemanticsNodes().isEmpty()
+        }
+
+        // 4. Exit to Library and verify "CONTINUAR" button is now displayed on the game card
+        composeTestRule.onNodeWithTag("emulator_menu_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("menu_exit_library_btn").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule
+            .onNodeWithTag("menu_exit_library_btn")
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("continue_rom_btn_$romId", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("continue_rom_btn_$romId", useUnmergedTree = true).assertExists()
+
+        // 5. Tap "CONTINUAR" to launch the game directly at the latest save state (Slot 1)
+        composeTestRule
+            .onNodeWithTag("continue_rom_btn_$romId", useUnmergedTree = true)
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("emulator_screen").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithText("Continuando", substring = true).assertIsDisplayed()
+
+        // 6. Open Quick Menu and enter "Editar Controles na Tela"
         composeTestRule.onNodeWithTag("emulator_menu_button").performClick()
         composeTestRule.waitUntil(timeoutMillis = 5000L) {
             composeTestRule
@@ -166,6 +276,15 @@ class ExampleRobolectricTest {
         // Selecting chips and opacity slider in the editor works
         composeTestRule.onNodeWithTag("editor_chip_turbo").performClick()
         composeTestRule.onNodeWithTag("editor_opacity_slider").assertIsDisplayed()
-        assertTrue(true)
+
+        // 7. Verify Save State & Battery Save (.sav) resilience across app updates / reconciliation
+        val repo = composeTestRule.activity.viewModel.repository
+        kotlinx.coroutines.runBlocking {
+            repo.reconcilePersistedData()
+            val recoveredSave = repo.getLatestSaveState(romId)
+            assertTrue("Latest save state must remain intact after update reconciliation", recoveredSave != null)
+            val stateBytes = repo.readSaveStateBytes(recoveredSave!!)
+            assertTrue("Save state bytes must be readable after reconciliation", stateBytes != null && stateBytes.isNotEmpty())
+        }
     }
 }

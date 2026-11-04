@@ -59,6 +59,7 @@ enum class GbcButton(val displayName: String) {
 
 data class LibraryUiState(
     val roms: List<RomEntity> = emptyList(),
+    val latestSaveByRomId: Map<Long, SaveStateEntity> = emptyMap(),
     val directories: List<ScannedDirectoryEntity> = emptyList(),
     val searchQuery: String = "",
     val selectedFilter: LibraryFilter = LibraryFilter.ALL,
@@ -129,11 +130,26 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
     val libraryState: StateFlow<LibraryUiState> = combine(
         repository.allRoms,
+        repository.allSaveStates,
         repository.scannedDirectories,
         _searchQuery,
-        _selectedFilter,
-        combine(_isScanning, _statusBanner, _romForCoverMenu) { s, b, r -> Triple(s, b, r) }
-    ) { allRoms, dirs, query, filter, (scanning, banner, coverRom) ->
+        combine(_selectedFilter, _isScanning, _statusBanner, _romForCoverMenu) { f, s, b, r ->
+             listOf(f, s, b, r)
+        }
+    ) { allRoms, allSaves, dirs, query, extras ->
+        val filter = extras[0] as LibraryFilter
+        val scanning = extras[1] as Boolean
+        val banner = extras[2] as String?
+        val coverRom = extras[3] as RomEntity?
+
+        val latestSavesMap = linkedMapOf<Long, SaveStateEntity>()
+        for (save in allSaves) {
+            val current = latestSavesMap[save.romId]
+            if (current == null || save.timestamp > current.timestamp) {
+                latestSavesMap[save.romId] = save
+            }
+        }
+
         val filtered = allRoms.filter { rom ->
             val matchesQuery = query.isBlank() ||
                 rom.title.contains(query, ignoreCase = true) ||
@@ -166,6 +182,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
         LibraryUiState(
             roms = sorted,
+            latestSaveByRomId = latestSavesMap,
             directories = dirs,
             searchQuery = query,
             selectedFilter = filter,
@@ -213,6 +230,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         viewModelScope.launch {
+            repository.reconcilePersistedData()
             val portrait = repository.getOrCreateControlLayout(false)
             val landscape = repository.getOrCreateControlLayout(true)
             _sessionState.update { current ->
@@ -322,7 +340,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun launchRom(rom: RomEntity) {
+    fun launchRom(rom: RomEntity, loadLatestSave: Boolean = false) {
         viewModelScope.launch {
             stopEmulationInternal()
             val bytes = repository.loadRomBytes(rom)
@@ -342,6 +360,27 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 .map { it.code }
             core.applyCheatCodes(cheats)
 
+            var initialToast = "Executando ${rom.title} (${rom.cartridgeType})"
+            if (loadLatestSave) {
+                val latestSave = repository.getLatestSaveState(rom.id)
+                if (latestSave != null) {
+                    val stateBytes = repository.readSaveStateBytes(latestSave)
+                    if (stateBytes != null && core.deserializeState(stateBytes)) {
+                        synchronized(currentFramePixels) {
+                            System.arraycopy(
+                                core.ppu.frontBuffer,
+                                0,
+                                currentFramePixels,
+                                0,
+                                currentFramePixels.size
+                            )
+                        }
+                        val slotLabel = if (latestSave.slotIndex == 0) "Quick Save" else "Slot ${latestSave.slotIndex}"
+                        initialToast = "Continuando ${rom.title} ($slotLabel)"
+                    }
+                }
+            }
+
             emulatorCore = core
             _activeRomId.value = rom.id
             sessionStartTimestamp = System.currentTimeMillis()
@@ -352,14 +391,19 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                     isRunning = true,
                     isPaused = false,
                     speedMultiplier = 1.0f,
+                    frameTick = core.framesExecuted,
                     activeModal = EmulatorModal.NONE,
                     isEditingControls = false,
-                    toastMessage = "Executando ${rom.title} (${rom.cartridgeType})"
+                    toastMessage = initialToast
                 )
             }
 
             startEmulationLoop()
         }
+    }
+
+    fun continueRom(rom: RomEntity) {
+        launchRom(rom, loadLatestSave = true)
     }
 
     private fun startEmulationLoop() {
@@ -419,6 +463,15 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                     calc
                 } else {
                     null
+                }
+
+                if (core.framesExecuted > 0L && core.framesExecuted % 300L == 0L) {
+                    state.activeRom?.let { rom ->
+                        try {
+                            repository.saveBatterySram(rom.crc32Hex, core.cartridge.dumpBatterySram())
+                        } catch (_: Exception) {
+                        }
+                    }
                 }
 
                 _sessionState.update { current ->
@@ -729,6 +782,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
             val core = emulatorCore ?: return@launch
             val bytes = repository.readSaveStateBytes(saveState)
             if (bytes != null && core.deserializeState(bytes)) {
+                repository.touchSaveStateTimestamp(saveState)
                 synchronized(currentFramePixels) {
                     System.arraycopy(core.ppu.frontBuffer, 0, currentFramePixels, 0, currentFramePixels.size)
                 }
@@ -822,6 +876,15 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
     fun clearToastMessage() {
         _sessionState.update { current ->
             current.copy(toastMessage = null)
+        }
+    }
+
+    fun flushActiveSessionToDisk() {
+        val rom = _sessionState.value.activeRom ?: return
+        val core = emulatorCore ?: return
+        try {
+            repository.saveBatterySram(rom.crc32Hex, core.cartridge.dumpBatterySram())
+        } catch (_: Exception) {
         }
     }
 

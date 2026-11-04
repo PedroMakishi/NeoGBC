@@ -32,8 +32,14 @@ interface NeoGbcDao {
     suspend fun deleteRom(romId: Long)
 
     // Save States Queries
+    @Query("SELECT * FROM save_states ORDER BY timestamp DESC")
+    fun observeAllSaveStates(): Flow<List<SaveStateEntity>>
+
     @Query("SELECT * FROM save_states WHERE romId = :romId ORDER BY slotIndex ASC")
     fun observeSaveStatesForRom(romId: Long): Flow<List<SaveStateEntity>>
+
+    @Query("SELECT * FROM save_states WHERE romId = :romId ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getLatestSaveStateForRom(romId: Long): SaveStateEntity?
 
     @Query("SELECT * FROM save_states WHERE romId = :romId AND slotIndex = :slotIndex LIMIT 1")
     suspend fun getSaveState(romId: Long, slotIndex: Int): SaveStateEntity?
@@ -43,6 +49,9 @@ interface NeoGbcDao {
 
     @Query("DELETE FROM save_states WHERE id = :id")
     suspend fun deleteSaveState(id: Long)
+
+    @Query("DELETE FROM save_states WHERE romId = :romId")
+    suspend fun deleteSaveStatesForRom(romId: Long)
 
     // Cheats Queries
     @Query("SELECT * FROM cheats WHERE romId = :romId ORDER BY createdTimestamp DESC")
