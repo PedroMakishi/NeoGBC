@@ -4,7 +4,9 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -80,7 +82,67 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Intercepts Bluetooth / USB Gamepad KeyEvents at the top of Window dispatch BEFORE
+     * Jetpack Compose's 2D Focus Engine can intercept D-Pad or A/B buttons, eliminating
+     * Bluetooth input lag and filtering out OS key-repeat bursts.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val state = viewModel.sessionState.value
+        if (state.isRunning && !state.isEditingControls) {
+            val action = event.action
+            if (action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP) {
+                val isPressed = action == KeyEvent.ACTION_DOWN
+                if (isPressed && event.repeatCount > 0) {
+                    if (state.buttonBeingRemapped != null || viewModel.resolveMappedButton(event.keyCode, state.keyMappings) != null) {
+                        return true
+                    }
+                } else if (viewModel.handlePhysicalKeyEvent(event.keyCode, isPressed)) {
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /**
+     * Captures Bluetooth / USB Gamepad D-Pad Hat Switch (AXIS_HAT_X, AXIS_HAT_Y),
+     * Left Analog Stick (AXIS_X, AXIS_Y), and Analog Triggers (L2/R2) directly on
+     * hardware packet arrival without waiting for fallback KeyEvent synthesis.
+     */
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        val src = event.source
+        val isGamepadMotion = (src and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
+            (src and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            (src and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
+
+        if (isGamepadMotion && event.action == MotionEvent.ACTION_MOVE && viewModel.sessionState.value.isRunning) {
+            val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
+            val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+            val stickX = event.getAxisValue(MotionEvent.AXIS_X)
+            val stickY = event.getAxisValue(MotionEvent.AXIS_Y)
+            val lTrigger = maxOf(
+                event.getAxisValue(MotionEvent.AXIS_LTRIGGER),
+                event.getAxisValue(MotionEvent.AXIS_BRAKE)
+            )
+            val rTrigger = maxOf(
+                event.getAxisValue(MotionEvent.AXIS_RTRIGGER),
+                event.getAxisValue(MotionEvent.AXIS_GAS)
+            )
+            if (viewModel.handleGamepadMotionAxes(hatX, hatY, stickX, stickY, lTrigger, rTrigger)) {
+                return true
+            }
+        }
+        return super.dispatchGenericMotionEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (event != null && event.repeatCount > 0) {
+            val state = viewModel.sessionState.value
+            if (state.isRunning && viewModel.resolveMappedButton(keyCode, state.keyMappings) != null) {
+                return true
+            }
+        }
         if (viewModel.handlePhysicalKeyEvent(keyCode, true)) {
             return true
         }

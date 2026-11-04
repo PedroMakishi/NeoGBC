@@ -24,13 +24,13 @@ class GbcMmu(
     val hram = ByteArray(0x7F)
 
     // Interrupt registers
-    var interruptFlag: Int = 0xE1 // 0xFF0F (IF)
+    @Volatile var interruptFlag: Int = 0xE1 // 0xFF0F (IF)
     var interruptEnable: Int = 0x00 // 0xFFFF (IE)
 
     // Joypad state (bit=1 means pressed internally, mapped inverted to 0xFF00)
-    var joypadSelect: Int = 0x30
-    var joypadDirections: Int = 0x00 // bit0=Right, bit1=Left, bit2=Up, bit3=Down
-    var joypadButtons: Int = 0x00    // bit0=A, bit1=B, bit2=Select, bit3=Start
+    @Volatile var joypadSelect: Int = 0x30
+    @Volatile var joypadDirections: Int = 0x00 // bit0=Right, bit1=Left, bit2=Up, bit3=Down
+    @Volatile var joypadButtons: Int = 0x00    // bit0=A, bit1=B, bit2=Select, bit3=Start
 
     // Timer registers
     private var divCounter: Int = 0xABCC

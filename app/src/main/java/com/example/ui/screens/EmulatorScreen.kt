@@ -558,7 +558,7 @@ private fun QuickLoadConfirmSheet(
                         .weight(1f)
                         .testTag("cancel_quick_load_btn")
                 ) {
-                    Text("Cancelar", color = TextSecondary, fontWeight = FontWeight.Bold)
+                    Text("Cancelar (B)", color = TextSecondary, fontWeight = FontWeight.Bold)
                 }
 
                 Button(
@@ -572,7 +572,7 @@ private fun QuickLoadConfirmSheet(
                         .weight(1f)
                         .testTag("confirm_quick_load_btn")
                 ) {
-                    Text("Carregar Save", fontWeight = FontWeight.Bold)
+                    Text("Carregar Save (A)", fontWeight = FontWeight.Bold)
                 }
             }
         }

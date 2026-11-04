@@ -215,23 +215,56 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
     // Live Framebuffer exposed for Canvas rendering
     val currentFramePixels = IntArray(GbcPpu.SCREEN_WIDTH * GbcPpu.SCREEN_HEIGHT) { 0xFF07080C.toInt() }
 
+    private val gamepadPrefs = application.getSharedPreferences("neogbc_gamepad_prefs", android.content.Context.MODE_PRIVATE)
+
     private var emulatorCore: GbcEmulatorCore? = null
     private var emulationJob: Job? = null
     private var audioTrack: AudioTrack? = null
     private var sessionStartTimestamp: Long = 0L
 
-    // Live Input states (combined touch + physical gamepad)
-    @Volatile private var inputUp = false
-    @Volatile private var inputDown = false
-    @Volatile private var inputLeft = false
-    @Volatile private var inputRight = false
-    @Volatile private var inputA = false
-    @Volatile private var inputB = false
-    @Volatile private var inputStart = false
-    @Volatile private var inputSelect = false
+    // Separate live input channels (Touch vs Physical/Bluetooth Keys vs Bluetooth Hat/Analog Axes)
+    @Volatile private var touchUp = false
+    @Volatile private var touchDown = false
+    @Volatile private var touchLeft = false
+    @Volatile private var touchRight = false
+    @Volatile private var touchA = false
+    @Volatile private var touchB = false
+    @Volatile private var touchStart = false
+    @Volatile private var touchSelect = false
+
+    @Volatile private var keyUp = false
+    @Volatile private var keyDown = false
+    @Volatile private var keyLeft = false
+    @Volatile private var keyRight = false
+    @Volatile private var keyA = false
+    @Volatile private var keyB = false
+    @Volatile private var keyStart = false
+    @Volatile private var keySelect = false
+
+    @Volatile private var axisUp = false
+    @Volatile private var axisDown = false
+    @Volatile private var axisLeft = false
+    @Volatile private var axisRight = false
+    @Volatile private var axisTurboHeld = false
+
+    // Sub-frame input latches guarantee that rapid Bluetooth taps (<16ms between DOWN and UP)
+    // are never lost between two 60Hz emulation frames.
+    @Volatile private var latchUp = false
+    @Volatile private var latchDown = false
+    @Volatile private var latchLeft = false
+    @Volatile private var latchRight = false
+    @Volatile private var latchA = false
+    @Volatile private var latchB = false
+    @Volatile private var latchStart = false
+    @Volatile private var latchSelect = false
+
     @Volatile private var physicalTurboHeld = false
 
     init {
+        val savedMappings = loadPersistedKeyMappings()
+        if (savedMappings.isNotEmpty()) {
+            _sessionState.update { current -> current.copy(keyMappings = savedMappings) }
+        }
         viewModelScope.launch {
             repository.reconcilePersistedData()
             val portrait = repository.getOrCreateControlLayout(false)
@@ -243,6 +276,51 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
         }
+    }
+
+    private fun loadPersistedKeyMappings(): Map<GbcButton, Int> {
+        val defaults = EmulatorSessionState.defaultKeyMappings().toMutableMap()
+        for (btn in GbcButton.entries) {
+            if (gamepadPrefs.contains(btn.name)) {
+                defaults[btn] = gamepadPrefs.getInt(btn.name, defaults[btn] ?: 0)
+            }
+        }
+        return defaults
+    }
+
+    private fun persistKeyMappings(mappings: Map<GbcButton, Int>) {
+        val editor = gamepadPrefs.edit()
+        for ((btn, code) in mappings) {
+            editor.putInt(btn.name, code)
+        }
+        editor.apply()
+    }
+
+    private fun clearAllInputs() {
+        touchUp = false; touchDown = false; touchLeft = false; touchRight = false
+        touchA = false; touchB = false; touchStart = false; touchSelect = false
+        keyUp = false; keyDown = false; keyLeft = false; keyRight = false
+        keyA = false; keyB = false; keyStart = false; keySelect = false
+        axisUp = false; axisDown = false; axisLeft = false; axisRight = false
+        axisTurboHeld = false
+        latchUp = false; latchDown = false; latchLeft = false; latchRight = false
+        latchA = false; latchB = false; latchStart = false; latchSelect = false
+        physicalTurboHeld = false
+        emulatorCore?.updateInputs()
+    }
+
+    private fun pushCombinedInputsToCoreImmediate(includeLatches: Boolean = true) {
+        val core = emulatorCore ?: return
+        core.updateInputs(
+            right = touchRight || keyRight || axisRight || (includeLatches && latchRight),
+            left = touchLeft || keyLeft || axisLeft || (includeLatches && latchLeft),
+            up = touchUp || keyUp || axisUp || (includeLatches && latchUp),
+            down = touchDown || keyDown || axisDown || (includeLatches && latchDown),
+            a = touchA || keyA || (includeLatches && latchA),
+            b = touchB || keyB || (includeLatches && latchB),
+            select = touchSelect || keySelect || (includeLatches && latchSelect),
+            start = touchStart || keyStart || (includeLatches && latchStart)
+        )
     }
 
     fun updateSearchQuery(query: String) {
@@ -419,29 +497,22 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         emulationJob = viewModelScope.launch(Dispatchers.Default) {
             var fpsFrames = 0
             var fpsTimer = System.currentTimeMillis()
+            val targetFrameNs = 16_742_706L // Exact 59.7275 Hz GBC hardware frame period
+            var nextFrameDeadlineNs = System.nanoTime() + targetFrameNs
 
             while (isActive && _sessionState.value.isRunning) {
                 val state = _sessionState.value
                 val core = emulatorCore
                 if (core == null || state.isPaused || state.isEditingControls || state.activeModal != EmulatorModal.NONE) {
-                    delay(16L)
+                    delay(12L)
+                    nextFrameDeadlineNs = System.nanoTime() + targetFrameNs
                     continue
                 }
 
-                val frameStartNs = System.nanoTime()
+                // 1. Push combined live + sub-frame latched inputs to MMU before stepping frame
+                pushCombinedInputsToCoreImmediate(includeLatches = true)
 
-                core.updateInputs(
-                    right = inputRight,
-                    left = inputLeft,
-                    up = inputUp,
-                    down = inputDown,
-                    a = inputA,
-                    b = inputB,
-                    select = inputSelect,
-                    start = inputStart
-                )
-
-                val isTurbo = state.isTurboEnabled || physicalTurboHeld
+                val isTurbo = state.isTurboEnabled || physicalTurboHeld || axisTurboHeld
                 val stepsCount = if (isTurbo) 2 else 1
 
                 var latestBuffer = core.ppu.frontBuffer
@@ -449,13 +520,29 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                     latestBuffer = core.runSingleFrame()
                 }
 
+                // 2. Consume sub-frame latches now that a full CPU/PPU frame has observed them
+                latchUp = false
+                latchDown = false
+                latchLeft = false
+                latchRight = false
+                latchA = false
+                latchB = false
+                latchStart = false
+                latchSelect = false
+                pushCombinedInputsToCoreImmediate(includeLatches = false)
+
                 synchronized(currentFramePixels) {
                     System.arraycopy(latestBuffer, 0, currentFramePixels, 0, currentFramePixels.size)
                 }
 
                 if (state.audioEnabled && stepsCount == 1 && core.apu.samplesProduced > 0) {
                     try {
-                        audioTrack?.write(core.apu.sampleBuffer, 0, core.apu.samplesProduced)
+                        audioTrack?.write(
+                            core.apu.sampleBuffer,
+                            0,
+                            core.apu.samplesProduced,
+                            AudioTrack.WRITE_NON_BLOCKING
+                        )
                     } catch (_: Exception) {
                     }
                 }
@@ -487,14 +574,15 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
 
-                val targetFrameNs = 16_742_000L
-                val elapsedNs = System.nanoTime() - frameStartNs
-                val sleepMs = (targetFrameNs - elapsedNs) / 1_000_000L
-                if (sleepMs > 1L) {
-                    delay(sleepMs)
-                } else {
-                    delay(1L)
+                val nowNs = System.nanoTime()
+                val remainingNs = nextFrameDeadlineNs - nowNs
+                if (remainingNs > 1_500_000L) {
+                    delay(remainingNs / 1_000_000L)
+                } else if (remainingNs < -targetFrameNs * 2) {
+                    // Resync deadline if thread was suspended
+                    nextFrameDeadlineNs = nowNs
                 }
+                nextFrameDeadlineNs += targetFrameNs
             }
         }
     }
@@ -508,11 +596,11 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(4096)
 
-            val track = AudioTrack.Builder()
+            val builder = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_GAME)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build()
                 )
                 .setAudioFormat(
@@ -524,7 +612,12 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 .setBufferSizeInBytes(minBuf * 2)
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            }
+
+            val track = builder.build()
             track.play()
             audioTrack = track
         } catch (_: Exception) {
@@ -542,14 +635,126 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         select: Boolean
     ) {
         if (_sessionState.value.isEditingControls) return
-        inputUp = up
-        inputDown = down
-        inputLeft = left
-        inputRight = right
-        inputA = a
-        inputB = b
-        inputStart = start
-        inputSelect = select
+        if (up && !touchUp) latchUp = true
+        if (down && !touchDown) latchDown = true
+        if (left && !touchLeft) latchLeft = true
+        if (right && !touchRight) latchRight = true
+        if (a && !touchA) latchA = true
+        if (b && !touchB) latchB = true
+        if (start && !touchStart) latchStart = true
+        if (select && !touchSelect) latchSelect = true
+
+        touchUp = up
+        touchDown = down
+        touchLeft = left
+        touchRight = right
+        touchA = a
+        touchB = b
+        touchStart = start
+        touchSelect = select
+
+        pushCombinedInputsToCoreImmediate(includeLatches = true)
+    }
+
+    /**
+     * Resolves a physical/Bluetooth keyCode to its mapped GbcButton in O(1) time.
+     */
+    fun resolveMappedButton(keyCode: Int, mappings: Map<GbcButton, Int> = _sessionState.value.keyMappings): GbcButton? {
+        for ((btn, mappedCode) in mappings) {
+            if (mappedCode == keyCode) return btn
+        }
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_W -> GbcButton.UP
+            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_S -> GbcButton.DOWN
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_A -> GbcButton.LEFT
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_D -> GbcButton.RIGHT
+            KeyEvent.KEYCODE_Z,
+            KeyEvent.KEYCODE_J,
+            KeyEvent.KEYCODE_BUTTON_A,
+            KeyEvent.KEYCODE_BUTTON_Y,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_BUTTON_1 -> GbcButton.A
+            KeyEvent.KEYCODE_X,
+            KeyEvent.KEYCODE_K,
+            KeyEvent.KEYCODE_BUTTON_B,
+            KeyEvent.KEYCODE_BUTTON_X,
+            KeyEvent.KEYCODE_BUTTON_2 -> GbcButton.B
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_BUTTON_START -> GbcButton.START
+            KeyEvent.KEYCODE_DEL,
+            KeyEvent.KEYCODE_BUTTON_SELECT,
+            KeyEvent.KEYCODE_BUTTON_MODE -> GbcButton.SELECT
+            KeyEvent.KEYCODE_BUTTON_R1,
+            KeyEvent.KEYCODE_BUTTON_R2 -> GbcButton.TURBO
+            KeyEvent.KEYCODE_BUTTON_L1 -> GbcButton.QUICK_SAVE
+            KeyEvent.KEYCODE_BUTTON_L2 -> GbcButton.QUICK_LOAD
+            else -> null
+        }
+    }
+
+    /**
+     * Handles Bluetooth / USB Gamepad analog stick (AXIS_X, AXIS_Y), D-Pad Hat switch
+     * (AXIS_HAT_X, AXIS_HAT_Y), and analog triggers (L2/R2) directly from dispatchGenericMotionEvent
+     * with zero Compose focus overhead.
+     */
+    fun handleGamepadMotionAxes(
+        hatX: Float,
+        hatY: Float,
+        stickX: Float,
+        stickY: Float,
+        leftTrigger: Float = 0f,
+        rightTrigger: Float = 0f
+    ): Boolean {
+        val state = _sessionState.value
+        if (!state.isRunning || state.isEditingControls) return false
+
+        val deadzone = 0.28f
+        val newLeft = hatX < -deadzone || stickX < -deadzone
+        val newRight = hatX > deadzone || stickX > deadzone
+        val newUp = hatY < -deadzone || stickY < -deadzone
+        val newDown = hatY > deadzone || stickY > deadzone
+        val newTurbo = rightTrigger > 0.45f
+
+        // Support remapping D-Pad on Bluetooth controllers that emit Hat axis events
+        val remappingBtn = state.buttonBeingRemapped
+        if (remappingBtn != null) {
+            val synthesizedKey = when {
+                newUp -> KeyEvent.KEYCODE_DPAD_UP
+                newDown -> KeyEvent.KEYCODE_DPAD_DOWN
+                newLeft -> KeyEvent.KEYCODE_DPAD_LEFT
+                newRight -> KeyEvent.KEYCODE_DPAD_RIGHT
+                rightTrigger > 0.6f -> KeyEvent.KEYCODE_BUTTON_R2
+                leftTrigger > 0.6f -> KeyEvent.KEYCODE_BUTTON_L2
+                else -> null
+            }
+            if (synthesizedKey != null) {
+                return handlePhysicalKeyEvent(synthesizedKey, true)
+            }
+            return true
+        }
+
+        if (state.activeModal != EmulatorModal.NONE) {
+            axisUp = false
+            axisDown = false
+            axisLeft = false
+            axisRight = false
+            axisTurboHeld = false
+            return true
+        }
+
+        if (newUp && !axisUp) latchUp = true
+        if (newDown && !axisDown) latchDown = true
+        if (newLeft && !axisLeft) latchLeft = true
+        if (newRight && !axisRight) latchRight = true
+
+        axisUp = newUp
+        axisDown = newDown
+        axisLeft = newLeft
+        axisRight = newRight
+        axisTurboHeld = newTurbo
+
+        pushCombinedInputsToCoreImmediate(includeLatches = true)
+        return newUp || newDown || newLeft || newRight || newTurbo
     }
 
     fun handlePhysicalKeyEvent(keyCode: Int, isPressed: Boolean): Boolean {
@@ -558,9 +763,10 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
         val remappingBtn = state.buttonBeingRemapped
         if (remappingBtn != null && isPressed) {
+            val updatedMap = state.keyMappings.toMutableMap()
+            updatedMap[remappingBtn] = keyCode
+            persistKeyMappings(updatedMap)
             _sessionState.update { current ->
-                val updatedMap = current.keyMappings.toMutableMap()
-                updatedMap[remappingBtn] = keyCode
                 current.copy(
                     keyMappings = updatedMap,
                     buttonBeingRemapped = null,
@@ -570,32 +776,71 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
             return true
         }
 
-        val matchedButton = state.keyMappings.entries.firstOrNull { it.value == keyCode }?.key
-            ?: when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_W -> GbcButton.UP
-                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_S -> GbcButton.DOWN
-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_A -> GbcButton.LEFT
-                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_D -> GbcButton.RIGHT
-                KeyEvent.KEYCODE_Z, KeyEvent.KEYCODE_J, KeyEvent.KEYCODE_BUTTON_A -> GbcButton.A
-                KeyEvent.KEYCODE_X, KeyEvent.KEYCODE_K, KeyEvent.KEYCODE_BUTTON_B -> GbcButton.B
-                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_BUTTON_START -> GbcButton.START
-                KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_BUTTON_SELECT -> GbcButton.SELECT
-                else -> null
-            } ?: return false
+        val matchedButton = resolveMappedButton(keyCode, state.keyMappings) ?: return false
+
+        // Handle Bluetooth / Physical Gamepad actions inside the Quick Load Confirmation Modal:
+        // Button mapped as "A" -> Confirm ("Carregar Save")
+        // Button mapped as "B" -> Cancel ("Cancelar")
+        if (state.activeModal == EmulatorModal.CONFIRM_QUICK_LOAD) {
+            clearAllInputs()
+            if (isPressed) {
+                when (matchedButton) {
+                    GbcButton.A -> confirmQuickLoad()
+                    GbcButton.B -> openModal(EmulatorModal.NONE)
+                    else -> Unit
+                }
+            }
+            return true
+        }
+
+        // If another modal is open, allow mapped "B" button to close it and block inputs from leaking into the game
+        if (state.activeModal != EmulatorModal.NONE) {
+            clearAllInputs()
+            if (isPressed && matchedButton == GbcButton.B) {
+                openModal(EmulatorModal.NONE)
+            }
+            return true
+        }
 
         when (matchedButton) {
-            GbcButton.UP -> inputUp = isPressed
-            GbcButton.DOWN -> inputDown = isPressed
-            GbcButton.LEFT -> inputLeft = isPressed
-            GbcButton.RIGHT -> inputRight = isPressed
-            GbcButton.A -> inputA = isPressed
-            GbcButton.B -> inputB = isPressed
-            GbcButton.START -> inputStart = isPressed
-            GbcButton.SELECT -> inputSelect = isPressed
+            GbcButton.UP -> {
+                if (isPressed && !keyUp) latchUp = true
+                keyUp = isPressed
+            }
+            GbcButton.DOWN -> {
+                if (isPressed && !keyDown) latchDown = true
+                keyDown = isPressed
+            }
+            GbcButton.LEFT -> {
+                if (isPressed && !keyLeft) latchLeft = true
+                keyLeft = isPressed
+            }
+            GbcButton.RIGHT -> {
+                if (isPressed && !keyRight) latchRight = true
+                keyRight = isPressed
+            }
+            GbcButton.A -> {
+                if (isPressed && !keyA) latchA = true
+                keyA = isPressed
+            }
+            GbcButton.B -> {
+                if (isPressed && !keyB) latchB = true
+                keyB = isPressed
+            }
+            GbcButton.START -> {
+                if (isPressed && !keyStart) latchStart = true
+                keyStart = isPressed
+            }
+            GbcButton.SELECT -> {
+                if (isPressed && !keySelect) latchSelect = true
+                keySelect = isPressed
+            }
             GbcButton.TURBO -> physicalTurboHeld = isPressed
             GbcButton.QUICK_SAVE -> if (isPressed) performQuickSave()
             GbcButton.QUICK_LOAD -> if (isPressed) performQuickLoad()
         }
+
+        pushCombinedInputsToCoreImmediate(includeLatches = true)
         return true
     }
 
@@ -700,15 +945,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun onAppMinimized() {
         flushActiveSessionToDisk()
-        inputUp = false
-        inputDown = false
-        inputLeft = false
-        inputRight = false
-        inputA = false
-        inputB = false
-        inputStart = false
-        inputSelect = false
-        physicalTurboHeld = false
+        clearAllInputs()
 
         _sessionState.update { current ->
             if (!current.isRunning) return@update current
@@ -898,8 +1135,20 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun performQuickLoad() {
         if (_sessionState.value.isEditingControls) return
+        val rom = _sessionState.value.activeRom ?: return
+        val cachedSaves = activeSaveStates.value
+        val hasKnownSave = cachedSaves.isNotEmpty() || libraryState.value.latestSaveByRomId.containsKey(rom.id)
+        if (hasKnownSave) {
+            pauseAudioTrackSafe()
+            _sessionState.update { current ->
+                current.copy(
+                    activeModal = EmulatorModal.CONFIRM_QUICK_LOAD,
+                    isEditingControls = false
+                )
+            }
+            return
+        }
         viewModelScope.launch {
-            val rom = _sessionState.value.activeRom ?: return@launch
             val targetState = database.dao().getSaveState(rom.id, 0) ?: repository.getLatestSaveState(rom.id)
             if (targetState != null) {
                 pauseAudioTrackSafe()
@@ -921,8 +1170,16 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
      * Executes the Quick Load after the user explicitly confirms in the confirmation modal.
      */
     fun confirmQuickLoad() {
+        val rom = _sessionState.value.activeRom ?: return
+        val cachedSaves = activeSaveStates.value
+        val fastTarget = cachedSaves.firstOrNull { it.slotIndex == 0 }
+            ?: cachedSaves.maxByOrNull { it.timestamp }
+            ?: libraryState.value.latestSaveByRomId[rom.id]
+        if (fastTarget != null) {
+            loadStateFromEntity(fastTarget)
+            return
+        }
         viewModelScope.launch {
-            val rom = _sessionState.value.activeRom ?: return@launch
             val targetState = database.dao().getSaveState(rom.id, 0) ?: repository.getLatestSaveState(rom.id)
             if (targetState != null) {
                 loadStateFromEntity(targetState)
@@ -1058,9 +1315,11 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun resetKeyMappings() {
+        val defaults = EmulatorSessionState.defaultKeyMappings()
+        persistKeyMappings(defaults)
         _sessionState.update { current ->
             current.copy(
-                keyMappings = EmulatorSessionState.defaultKeyMappings(),
+                keyMappings = defaults,
                 buttonBeingRemapped = null,
                 toastMessage = "Mapeamento de controle físico restaurado"
             )

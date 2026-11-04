@@ -392,5 +392,57 @@ class ExampleRobolectricTest {
             val stateBytes = repo.readSaveStateBytes(recoveredSave!!)
             assertTrue("Save state bytes must be readable after reconciliation", stateBytes != null && stateBytes.isNotEmpty())
         }
+
+        // 10. Verify Bluetooth Controller Quick Load Confirmation ("B" cancels, "A" confirms) & Motion Axes
+        // Remap B to custom keycode KEYCODE_BUTTON_C and A to custom keycode KEYCODE_BUTTON_Z to prove custom mappings work
+        vm.startRemappingButton(com.example.viewmodel.GbcButton.B)
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_C, true))
+        vm.startRemappingButton(com.example.viewmodel.GbcButton.A)
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_Z, true))
+
+        // Trigger Quick Load via Bluetooth controller (L2)
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_L2, true))
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_L2, false))
+        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.waitForIdle()
+            vm.sessionState.value.activeModal == com.example.viewmodel.EmulatorModal.CONFIRM_QUICK_LOAD
+        }
+
+        // Press mapped "B" button (KEYCODE_BUTTON_C) -> must Cancel and close modal
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_C, true))
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_C, false))
+        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.waitForIdle()
+            vm.sessionState.value.activeModal == com.example.viewmodel.EmulatorModal.NONE
+        }
+
+        // Trigger Quick Load via Bluetooth controller (L2) again
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_L2, true))
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_L2, false))
+        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.waitForIdle()
+            vm.sessionState.value.activeModal == com.example.viewmodel.EmulatorModal.CONFIRM_QUICK_LOAD
+        }
+
+        // Press mapped "A" button (KEYCODE_BUTTON_Z) -> must Confirm and load Save State!
+        vm.clearToastMessage()
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_Z, true))
+        assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_Z, false))
+        composeTestRule.waitForIdle()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.waitForIdle()
+            vm.sessionState.value.activeModal == com.example.viewmodel.EmulatorModal.NONE
+        }
+
+        // Verify Bluetooth Hat / Analog Stick motion axes
+        assertTrue(
+            "Bluetooth D-Pad Hat and Analog Stick motion must be handled immediately",
+            vm.handleGamepadMotionAxes(hatX = 1.0f, hatY = -1.0f, stickX = 0f, stickY = 0f)
+        )
+        vm.handleGamepadMotionAxes(hatX = 0f, hatY = 0f, stickX = 0f, stickY = 0f)
+        vm.resetKeyMappings()
     }
 }
