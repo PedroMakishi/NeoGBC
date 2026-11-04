@@ -193,6 +193,7 @@ fun NeoGbcAppContent(
                 onToggleAudio = viewModel::toggleAudio,
                 onQuickSave = viewModel::performQuickSave,
                 onQuickLoad = viewModel::performQuickLoad,
+                onConfirmQuickLoad = viewModel::confirmQuickLoad,
                 onOpenModal = viewModel::openModal,
                 onEnterEditControls = viewModel::enterTouchControlsEditor,
                 onExitEditControls = viewModel::exitTouchControlsEditor,

@@ -80,6 +80,7 @@ data class EmulatorSessionState(
     val frameTick: Long = 0L,
     val videoFilter: VideoFilterMode = VideoFilterMode.LCD_GRID,
     val dmgPalette: DmgPalettePreset = DmgPalettePreset.CLASSIC_GREEN,
+    val customPaletteActiveOnCgb: Boolean = false,
     val isEditingControls: Boolean = false,
     val portraitLayout: ControlLayoutEntity = NeoGbcRepository.defaultControlLayout(false),
     val landscapeLayout: ControlLayoutEntity = NeoGbcRepository.defaultControlLayout(true),
@@ -114,7 +115,8 @@ enum class EmulatorModal {
     SAVE_STATES,
     CHEATS,
     VIDEO_FILTERS,
-    GAMEPAD_REMAP
+    GAMEPAD_REMAP,
+    CONFIRM_QUICK_LOAD
 }
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -355,6 +357,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 core.cartridge.loadBatterySram(sram)
             }
             core.ppu.dmgPalettePreset = _sessionState.value.dmgPalette
+            core.ppu.forceDmgPaletteOnCgb = _sessionState.value.customPaletteActiveOnCgb
 
             val cheats = database.dao().getCheatsForRomOnce(rom.id)
                 .filter { it.isEnabled }
@@ -367,6 +370,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 if (latestSave != null) {
                     val stateBytes = repository.readSaveStateBytes(latestSave)
                     if (stateBytes != null && core.deserializeState(stateBytes)) {
+                        core.ppu.reRenderCurrentFrame()
                         synchronized(currentFramePixels) {
                             System.arraycopy(
                                 core.ppu.frontBuffer,
@@ -646,21 +650,33 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
     /**
      * Captures a pure game-only screenshot (directly from the 160x144 GBC/GB framebuffer without
-     * any emulator UI or virtual controls) and saves it automatically to the phone's Gallery.
+     * any emulator UI or virtual controls, including active Video Filters and GB Palettes)
+     * and saves it automatically to the phone's Gallery.
      * Strictly blocked while editing virtual controls (`isEditingControls == true`).
      */
     fun captureGameScreenshotToGallery() {
         if (_sessionState.value.isEditingControls) return
         viewModelScope.launch {
-            val rom = _sessionState.value.activeRom ?: return@launch
+            val state = _sessionState.value
+            val rom = state.activeRom ?: return@launch
             val core = emulatorCore
             val frameCopy = synchronized(currentFramePixels) {
                 if (core != null) {
+                    core.ppu.dmgPalettePreset = state.dmgPalette
+                    core.ppu.forceDmgPaletteOnCgb = state.customPaletteActiveOnCgb
+                    core.ppu.reRenderCurrentFrame()
                     System.arraycopy(core.ppu.frontBuffer, 0, currentFramePixels, 0, currentFramePixels.size)
                 }
                 currentFramePixels.copyOf()
             }
-            val savedFile = repository.saveScreenshotToGallery(rom.title, frameCopy)
+            val applyPalette = !rom.isCgb || state.customPaletteActiveOnCgb
+            val savedFile = repository.saveScreenshotToGallery(
+                romTitle = rom.title,
+                frameBuffer = frameCopy,
+                videoFilter = state.videoFilter,
+                dmgPalette = state.dmgPalette,
+                applyDmgPaletteFilter = applyPalette
+            )
             _sessionState.update { current ->
                 current.copy(
                     toastMessage = if (savedFile != null) {
@@ -753,10 +769,20 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setDmgPalette(preset: DmgPalettePreset) {
-        emulatorCore?.ppu?.dmgPalettePreset = preset
+        val core = emulatorCore
+        if (core != null) {
+            core.ppu.dmgPalettePreset = preset
+            core.ppu.forceDmgPaletteOnCgb = true
+            core.ppu.reRenderCurrentFrame()
+            synchronized(currentFramePixels) {
+                System.arraycopy(core.ppu.frontBuffer, 0, currentFramePixels, 0, currentFramePixels.size)
+            }
+        }
         _sessionState.update { current ->
             current.copy(
                 dmgPalette = preset,
+                customPaletteActiveOnCgb = true,
+                frameTick = current.frameTick + 1L,
                 toastMessage = "Paleta DMG: ${preset.displayName}"
             )
         }
@@ -852,16 +878,45 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         saveStateToSlot(0, "Quick Save", closeModal = false)
     }
 
+    /**
+     * Opens a confirmation prompt before rewinding/loading the latest save from the in-game Quick Load button,
+     * preventing accidental loss of unsaved progress when reaching for the adjacent Quick Save button.
+     */
     fun performQuickLoad() {
         if (_sessionState.value.isEditingControls) return
         viewModelScope.launch {
             val rom = _sessionState.value.activeRom ?: return@launch
-            val quickState = database.dao().getSaveState(rom.id, 0)
-            if (quickState != null) {
-                loadStateFromEntity(quickState)
+            val targetState = database.dao().getSaveState(rom.id, 0) ?: repository.getLatestSaveState(rom.id)
+            if (targetState != null) {
+                _sessionState.update { current ->
+                    current.copy(
+                        activeModal = EmulatorModal.CONFIRM_QUICK_LOAD,
+                        isEditingControls = false
+                    )
+                }
             } else {
                 _sessionState.update { current ->
                     current.copy(toastMessage = "Nenhum Quick Save encontrado ainda")
+                }
+            }
+        }
+    }
+
+    /**
+     * Executes the Quick Load after the user explicitly confirms in the confirmation modal.
+     */
+    fun confirmQuickLoad() {
+        viewModelScope.launch {
+            val rom = _sessionState.value.activeRom ?: return@launch
+            val targetState = database.dao().getSaveState(rom.id, 0) ?: repository.getLatestSaveState(rom.id)
+            if (targetState != null) {
+                loadStateFromEntity(targetState)
+            } else {
+                _sessionState.update { current ->
+                    current.copy(
+                        activeModal = EmulatorModal.NONE,
+                        toastMessage = "Nenhum Quick Save encontrado ainda"
+                    )
                 }
             }
         }
@@ -900,6 +955,9 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
             val bytes = repository.readSaveStateBytes(saveState)
             if (bytes != null && core.deserializeState(bytes)) {
                 repository.touchSaveStateTimestamp(saveState)
+                core.ppu.dmgPalettePreset = _sessionState.value.dmgPalette
+                core.ppu.forceDmgPaletteOnCgb = _sessionState.value.customPaletteActiveOnCgb
+                core.ppu.reRenderCurrentFrame()
                 synchronized(currentFramePixels) {
                     System.arraycopy(core.ppu.frontBuffer, 0, currentFramePixels, 0, currentFramePixels.size)
                 }
@@ -908,7 +966,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                         activeModal = EmulatorModal.NONE,
                         isPaused = false,
                         isAutoPausedByLifecycle = false,
-                        frameTick = core.framesExecuted,
+                        frameTick = core.framesExecuted + 1L,
                         toastMessage = "Slot ${saveState.slotIndex} carregado com sucesso!"
                     )
                 }

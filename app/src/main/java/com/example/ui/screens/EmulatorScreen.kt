@@ -128,6 +128,7 @@ fun EmulatorScreen(
     onToggleAudio: () -> Unit,
     onQuickSave: () -> Unit,
     onQuickLoad: () -> Unit,
+    onConfirmQuickLoad: () -> Unit = {},
     onOpenModal: (EmulatorModal) -> Unit,
     onEnterEditControls: () -> Unit,
     onExitEditControls: () -> Unit,
@@ -482,7 +483,98 @@ fun EmulatorScreen(
                     onResetDefaults = onResetKeyMappings
                 )
             }
+            EmulatorModal.CONFIRM_QUICK_LOAD -> {
+                QuickLoadConfirmSheet(
+                    onDismiss = { onOpenModal(EmulatorModal.NONE) },
+                    onConfirm = onConfirmQuickLoad
+                )
+            }
             EmulatorModal.NONE -> Unit
+        }
+    }
+}
+
+@Composable
+private fun QuickLoadConfirmSheet(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    NeoGbcModalOverlay(onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 18.dp)
+                .testTag("quick_load_confirm_dialog"),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MatrixBlue.copy(alpha = 0.18f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = NeoIcons.History,
+                        contentDescription = "Retroceder Save",
+                        tint = MatrixBlue
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Retroceder ao Último Save?",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = NeonCyan,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Confirmação contra toque acidental",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+
+            Text(
+                text = "Deseja realmente carregar o último save gravado? Todo o progresso atual não salvo será perdido.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextPrimary,
+                fontSize = 13.sp
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("cancel_quick_load_btn")
+                ) {
+                    Text("Cancelar", color = TextSecondary, fontWeight = FontWeight.Bold)
+                }
+
+                Button(
+                    onClick = onConfirm,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = NeonCyan,
+                        contentColor = OledBlack
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("confirm_quick_load_btn")
+                ) {
+                    Text("Carregar Save", fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }

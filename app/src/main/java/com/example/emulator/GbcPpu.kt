@@ -55,6 +55,7 @@ class GbcPpu(
     var opri: Int = 0
 
     var dmgPalettePreset: DmgPalettePreset = DmgPalettePreset.CLASSIC_GREEN
+    var forceDmgPaletteOnCgb: Boolean = false
 
     private var dotCounter: Int = 0
     private var mode: Int = 2 // 0=HBlank, 1=VBlank, 2=OAM, 3=Transfer
@@ -176,6 +177,33 @@ class GbcPpu(
             updateCgbColor(true, i)
             updateCgbColor(false, i)
         }
+    }
+
+    private fun mapArgbToDmgPalette(argb: Int): Int {
+        val colors = dmgPalettePreset.colors
+        if (argb == colors[0] || argb == colors[1] || argb == colors[2] || argb == colors[3]) {
+            return argb
+        }
+        val r = (argb shr 16) and 0xFF
+        val g = (argb shr 8) and 0xFF
+        val b = argb and 0xFF
+        val luma = (r * 77 + g * 150 + b * 29) shr 8
+        val shade = (3 - (luma shr 6)).coerceIn(0, 3)
+        return colors[shade]
+    }
+
+    /**
+     * Re-renders all 144 scanlines from current VRAM/OAM state into `frontBuffer` immediately,
+     * so changing the GB palette updates both the live screen and screenshots even while paused.
+     */
+    fun reRenderCurrentFrame() {
+        val savedWindowLine = windowLineCounter
+        windowLineCounter = 0
+        for (line in 0 until SCREEN_HEIGHT) {
+            renderScanline(line)
+        }
+        windowLineCounter = savedWindowLine
+        System.arraycopy(workingBuffer, 0, frontBuffer, 0, workingBuffer.size)
     }
 
     fun writeLcdc(value: Int) {
@@ -328,14 +356,20 @@ class GbcPpu(
                 bgHasPriority[x] = bgOamPriority
 
                 workingBuffer[rowOffset + x] = if (isCgbMode) {
-                    cgbBgColors[(cgbPaletteIdx * 4) + colorNum]
+                    val rawCgb = cgbBgColors[(cgbPaletteIdx * 4) + colorNum]
+                    if (forceDmgPaletteOnCgb) mapArgbToDmgPalette(rawCgb) else rawCgb
                 } else {
                     val shade = (bgp shr (colorNum * 2)) and 0x03
                     dmgPalettePreset.colors[shade]
                 }
             }
         } else {
-            val blankColor = if (isCgbMode) cgbBgColors[0] else dmgPalettePreset.colors[0]
+            val blankColor = if (isCgbMode) {
+                val rawCgb = cgbBgColors[0]
+                if (forceDmgPaletteOnCgb) mapArgbToDmgPalette(rawCgb) else rawCgb
+            } else {
+                dmgPalettePreset.colors[0]
+            }
             for (x in 0 until SCREEN_WIDTH) {
                 workingBuffer[rowOffset + x] = blankColor
             }
@@ -402,7 +436,8 @@ class GbcPpu(
 
                     if (!hiddenByBg) {
                         workingBuffer[rowOffset + screenX] = if (isCgbMode) {
-                            cgbObjColors[(cgbPaletteIdx * 4) + colorNum]
+                            val rawCgb = cgbObjColors[(cgbPaletteIdx * 4) + colorNum]
+                            if (forceDmgPaletteOnCgb) mapArgbToDmgPalette(rawCgb) else rawCgb
                         } else {
                             val shade = (dmgPalette shr (colorNum * 2)) and 0x03
                             dmgPalettePreset.colors[shade]

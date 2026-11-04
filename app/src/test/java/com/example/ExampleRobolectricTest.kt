@@ -310,17 +310,67 @@ class ExampleRobolectricTest {
             !composeTestRule.activity.viewModel.sessionState.value.isPaused
         )
 
-        // Game-only Screenshot via top-right screenshot button
+        // 7b. Verify Quick Load confirmation dialog when tapping in-game quick_load_button
+        composeTestRule.onNodeWithTag("quick_save_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.activity.viewModel.sessionState.value.toastMessage == "Estado salvo no Slot 0!"
+        }
+        composeTestRule.onNodeWithTag("quick_load_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("quick_load_confirm_dialog").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("quick_load_confirm_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Retroceder ao Último Save?", substring = true).assertIsDisplayed()
+
+        // Cancel Quick Load first to ensure accidental taps do not lose progress
+        composeTestRule.onNodeWithTag("cancel_quick_load_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("quick_load_confirm_dialog").fetchSemanticsNodes().isEmpty()
+        }
+
+        // Now trigger Quick Load again and confirm
+        composeTestRule.onNodeWithTag("quick_load_button").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.onAllNodesWithTag("confirm_quick_load_btn").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithTag("confirm_quick_load_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000L) {
+            composeTestRule.activity.viewModel.sessionState.value.toastMessage == "Slot 0 carregado com sucesso!"
+        }
+
+        // 7c. Game-only Screenshot via top-right screenshot button with active Video Filter & GB Palette
+        val vm = composeTestRule.activity.viewModel
+        vm.setDmgPalette(com.example.emulator.DmgPalettePreset.CYBER_NEON)
+        vm.setVideoFilter(com.example.emulator.VideoFilterMode.CRT_SCANLINES)
+        composeTestRule.waitForIdle()
+
+        val screenshotsDir = java.io.File(composeTestRule.activity.filesDir, "screenshots")
+        screenshotsDir.listFiles()?.forEach { it.delete() }
+
         composeTestRule.onNodeWithTag("screenshot_button").performClick()
         composeTestRule.waitUntil(timeoutMillis = 5000L) {
-            composeTestRule.activity.viewModel.sessionState.value.toastMessage == "Captura de tela salva na Galeria!"
+            screenshotsDir.listFiles()?.any { it.extension == "png" && it.length() > 0L } == true
         }
-        val screenshotsDir = java.io.File(composeTestRule.activity.filesDir, "screenshots")
         val savedScreenshots = screenshotsDir.listFiles()?.filter { it.extension == "png" && it.length() > 0L }.orEmpty()
         assertTrue("Game-only PNG screenshot must be generated and saved", savedScreenshots.isNotEmpty())
 
+        // Verify that renderFilteredScreenshotBitmap bakes both the active DmgPalettePreset and VideoFilterMode
+        val testPixels = IntArray(160 * 144) { 0xFFFFFFFF.toInt() }
+        val filteredBmp = vm.repository.renderFilteredScreenshotBitmap(
+            frameBuffer = testPixels,
+            videoFilter = com.example.emulator.VideoFilterMode.CRT_SCANLINES,
+            dmgPalette = com.example.emulator.DmgPalettePreset.CYBER_NEON,
+            applyDmgPaletteFilter = true
+        )
+        assertTrue("Upscaled screenshot width must be 640", filteredBmp.width == 640 && filteredBmp.height == 576)
+        // Non-scanline row (y = 2) has pure CYBER_NEON shade 0 (0xFF00F5D4), while scanline row (y = 0) is darkened by CRT scanline
+        assertTrue(
+            "Screenshot must include active GB Palette and CRT Scanlines filter",
+            filteredBmp.getPixel(10, 2) == com.example.emulator.DmgPalettePreset.CYBER_NEON.colors[0] &&
+                filteredBmp.getPixel(10, 0) != filteredBmp.getPixel(10, 2)
+        )
+
         // 8. Verify Auto-Pause on Minimize and Auto-Resume on Return
-        val vm = composeTestRule.activity.viewModel
         assertTrue("Game is running and unpaused before minimize", vm.sessionState.value.isRunning && !vm.sessionState.value.isPaused)
         vm.onAppMinimized()
         assertTrue(

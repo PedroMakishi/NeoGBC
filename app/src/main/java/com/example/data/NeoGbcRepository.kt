@@ -10,7 +10,9 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.example.emulator.Cartridge
+import com.example.emulator.DmgPalettePreset
 import com.example.emulator.GbcPpu
+import com.example.emulator.VideoFilterMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -462,23 +464,134 @@ class NeoGbcRepository(
     }
 
     /**
-     * Captures a pure game-only screenshot from the 160x144 GBC/GB framebuffer (without any emulator UI or controls),
-     * upscales 4x (640x576) with nearest-neighbor pixel accuracy, and saves it automatically to the device Gallery
-     * (`Pictures/NeoGBC` via `MediaStore.Images.Media`).
+     * Renders the 160x144 game framebuffer into a 640x576 (4x) Bitmap with the active
+     * GB Palette (`DmgPalettePreset`) and Screen Filter (`VideoFilterMode`: Pixel Perfect,
+     * LCD Grid, CRT Scanlines, or Soft Bilinear) baked directly into the image,
+     * with zero emulator UI or virtual controls.
      */
-    suspend fun saveScreenshotToGallery(romTitle: String, frameBuffer: IntArray): File? = withContext(Dispatchers.IO) {
+    fun renderFilteredScreenshotBitmap(
+        frameBuffer: IntArray,
+        videoFilter: VideoFilterMode,
+        dmgPalette: DmgPalettePreset,
+        applyDmgPaletteFilter: Boolean
+    ): Bitmap {
+        val srcW = GbcPpu.SCREEN_WIDTH
+        val srcH = GbcPpu.SCREEN_HEIGHT
+        val processedPixels = IntArray(srcW * srcH)
+        val colors = dmgPalette.colors
+
+        for (idx in 0 until (srcW * srcH)) {
+            val raw = if (idx < frameBuffer.size) frameBuffer[idx] else 0xFF07080C.toInt()
+            processedPixels[idx] = if (applyDmgPaletteFilter) {
+                if (raw == colors[0] || raw == colors[1] || raw == colors[2] || raw == colors[3]) {
+                    raw
+                } else {
+                    val r = (raw shr 16) and 0xFF
+                    val g = (raw shr 8) and 0xFF
+                    val b = raw and 0xFF
+                    val luma = (r * 77 + g * 150 + b * 29) shr 8
+                    val shade = (3 - (luma shr 6)).coerceIn(0, 3)
+                    colors[shade]
+                }
+            } else {
+                raw
+            }
+        }
+
+        val scale = 4
+        val dstW = srcW * scale
+        val dstH = srcH * scale
+        val outPixels = IntArray(dstW * dstH)
+
+        fun darkenPixel(argb: Int, keepRatioNum: Int, keepRatioDen: Int): Int {
+            val r = (((argb shr 16) and 0xFF) * keepRatioNum) / keepRatioDen
+            val g = (((argb shr 8) and 0xFF) * keepRatioNum) / keepRatioDen
+            val b = ((argb and 0xFF) * keepRatioNum) / keepRatioDen
+            return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+
+        for (y in 0 until dstH) {
+            val sy = y / scale
+            val rowOffset = y * dstW
+            for (x in 0 until dstW) {
+                val sx = x / scale
+                val baseColor = if (videoFilter == VideoFilterMode.SOFT_BILINEAR) {
+                    val fx = (x % scale) / scale.toFloat()
+                    val fy = (y % scale) / scale.toFloat()
+                    val sx1 = (sx + 1).coerceAtMost(srcW - 1)
+                    val sy1 = (sy + 1).coerceAtMost(srcH - 1)
+                    val c00 = processedPixels[sy * srcW + sx]
+                    val c10 = processedPixels[sy * srcW + sx1]
+                    val c01 = processedPixels[sy1 * srcW + sx]
+                    val c11 = processedPixels[sy1 * srcW + sx1]
+                    val w00 = (1f - fx) * (1f - fy)
+                    val w10 = fx * (1f - fy)
+                    val w01 = (1f - fx) * fy
+                    val w11 = fx * fy
+                    val r = (
+                        ((c00 shr 16) and 0xFF) * w00 +
+                            ((c10 shr 16) and 0xFF) * w10 +
+                            ((c01 shr 16) and 0xFF) * w01 +
+                            ((c11 shr 16) and 0xFF) * w11
+                        ).toInt().coerceIn(0, 255)
+                    val g = (
+                        ((c00 shr 8) and 0xFF) * w00 +
+                            ((c10 shr 8) and 0xFF) * w10 +
+                            ((c01 shr 8) and 0xFF) * w01 +
+                            ((c11 shr 8) and 0xFF) * w11
+                        ).toInt().coerceIn(0, 255)
+                    val b = (
+                        (c00 and 0xFF) * w00 +
+                            (c10 and 0xFF) * w10 +
+                            (c01 and 0xFF) * w01 +
+                            (c11 and 0xFF) * w11
+                        ).toInt().coerceIn(0, 255)
+                    (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                } else {
+                    processedPixels[sy * srcW + sx]
+                }
+
+                outPixels[rowOffset + x] = when (videoFilter) {
+                    VideoFilterMode.LCD_GRID -> {
+                        if ((x % scale == 0 && sx % 2 == 1) || (y % scale == 0 && sy % 2 == 1)) {
+                            darkenPixel(baseColor, 78, 100)
+                        } else {
+                            baseColor
+                        }
+                    }
+                    VideoFilterMode.CRT_SCANLINES -> {
+                        if (y % scale == 0) {
+                            darkenPixel(baseColor, 66, 100)
+                        } else {
+                            baseColor
+                        }
+                    }
+                    else -> baseColor
+                }
+            }
+        }
+
+        return Bitmap.createBitmap(outPixels, dstW, dstH, Bitmap.Config.ARGB_8888)
+    }
+
+    /**
+     * Captures a pure game-only screenshot from the 160x144 GBC/GB framebuffer (without any emulator UI or controls),
+     * including the active Video Filter and GB Palette, upscaled 4x (640x576), and saves it automatically to the
+     * device Gallery (`Pictures/NeoGBC` via `MediaStore.Images.Media`).
+     */
+    suspend fun saveScreenshotToGallery(
+        romTitle: String,
+        frameBuffer: IntArray,
+        videoFilter: VideoFilterMode = VideoFilterMode.LCD_GRID,
+        dmgPalette: DmgPalettePreset = DmgPalettePreset.CLASSIC_GREEN,
+        applyDmgPaletteFilter: Boolean = false
+    ): File? = withContext(Dispatchers.IO) {
         try {
-            val rawBitmap = Bitmap.createBitmap(
-                frameBuffer,
-                GbcPpu.SCREEN_WIDTH,
-                GbcPpu.SCREEN_HEIGHT,
-                Bitmap.Config.ARGB_8888
-            )
-            val upscaledBitmap = Bitmap.createScaledBitmap(
-                rawBitmap,
-                GbcPpu.SCREEN_WIDTH * 4,
-                GbcPpu.SCREEN_HEIGHT * 4,
-                false
+            val upscaledBitmap = renderFilteredScreenshotBitmap(
+                frameBuffer = frameBuffer,
+                videoFilter = videoFilter,
+                dmgPalette = dmgPalette,
+                applyDmgPaletteFilter = applyDmgPaletteFilter
             )
 
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
