@@ -130,6 +130,7 @@ class GbcEmulatorCore(
                 apu.saveState(out)
                 mmu.saveState(out)
                 cpu.saveState(out)
+                apu.saveExtendedState(out)
             }
         }
         return bos.toByteArray()
@@ -148,6 +149,7 @@ class GbcEmulatorCore(
                     apu.loadState(input)
                     mmu.loadState(input)
                     cpu.loadState(input)
+                    apu.loadExtendedStateIfPresent(input)
                 }
             }
             true

@@ -619,6 +619,11 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         if (_sessionState.value.isEditingControls) return
         _sessionState.update { current ->
             val next = !current.audioEnabled
+            if (next && !current.isPaused && current.activeModal == EmulatorModal.NONE) {
+                resumeAudioTrackSafe()
+            } else if (!next) {
+                pauseAudioTrackSafe()
+            }
             current.copy(
                 audioEnabled = next,
                 toastMessage = if (next) "Áudio Estéreo GBC Ativado" else "Áudio Silenciado"
@@ -790,6 +795,11 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
     fun openModal(modal: EmulatorModal) {
         _sessionState.update { current ->
+            if (modal != EmulatorModal.NONE) {
+                pauseAudioTrackSafe()
+            } else if (current.isRunning && !current.isPaused && current.audioEnabled) {
+                resumeAudioTrackSafe()
+            }
             current.copy(
                 activeModal = modal,
                 isEditingControls = false
@@ -798,6 +808,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun enterTouchControlsEditor() {
+        pauseAudioTrackSafe()
         _sessionState.update { current ->
             current.copy(
                 activeModal = EmulatorModal.NONE,
@@ -809,6 +820,9 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
     fun exitTouchControlsEditor() {
         val snapshot = _sessionState.value
+        if (snapshot.isRunning && !snapshot.isPaused && snapshot.audioEnabled) {
+            resumeAudioTrackSafe()
+        }
         _sessionState.update { current ->
             current.copy(
                 isEditingControls = false,
@@ -888,6 +902,7 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
             val rom = _sessionState.value.activeRom ?: return@launch
             val targetState = database.dao().getSaveState(rom.id, 0) ?: repository.getLatestSaveState(rom.id)
             if (targetState != null) {
+                pauseAudioTrackSafe()
                 _sessionState.update { current ->
                     current.copy(
                         activeModal = EmulatorModal.CONFIRM_QUICK_LOAD,
@@ -913,6 +928,9 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
                 loadStateFromEntity(targetState)
             } else {
                 _sessionState.update { current ->
+                    if (current.isRunning && !current.isPaused && current.audioEnabled) {
+                        resumeAudioTrackSafe()
+                    }
                     current.copy(
                         activeModal = EmulatorModal.NONE,
                         toastMessage = "Nenhum Quick Save encontrado ainda"
@@ -941,8 +959,12 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
             repository.saveBatterySram(rom.crc32Hex, core.cartridge.dumpBatterySram())
 
             _sessionState.update { current ->
+                val nextModal = if (closeModal) EmulatorModal.NONE else current.activeModal
+                if (nextModal == EmulatorModal.NONE && current.isRunning && !current.isPaused && current.audioEnabled) {
+                    resumeAudioTrackSafe()
+                }
                 current.copy(
-                    activeModal = if (closeModal) EmulatorModal.NONE else current.activeModal,
+                    activeModal = nextModal,
                     toastMessage = "Estado salvo no Slot $slotIndex!"
                 )
             }
@@ -955,11 +977,16 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
             val bytes = repository.readSaveStateBytes(saveState)
             if (bytes != null && core.deserializeState(bytes)) {
                 repository.touchSaveStateTimestamp(saveState)
+                core.apu.clearFrameSamples()
                 core.ppu.dmgPalettePreset = _sessionState.value.dmgPalette
                 core.ppu.forceDmgPaletteOnCgb = _sessionState.value.customPaletteActiveOnCgb
                 core.ppu.reRenderCurrentFrame()
                 synchronized(currentFramePixels) {
                     System.arraycopy(core.ppu.frontBuffer, 0, currentFramePixels, 0, currentFramePixels.size)
+                }
+                pauseAudioTrackSafe()
+                if (_sessionState.value.audioEnabled) {
+                    resumeAudioTrackSafe()
                 }
                 _sessionState.update { current ->
                     current.copy(

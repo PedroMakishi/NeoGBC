@@ -315,4 +315,118 @@ class ExampleUnitTest {
             clampedIntoGameRight.x - halfW >= gameRect.right
         )
     }
+
+    @Test
+    fun `validate Version 15 APU Volume Envelope decays Channel 4 noise SFX to silence without length counter`() {
+        val core = GbcEmulatorCore(createSyntheticGbcRomZipBytes())
+        val apu = core.apu
+
+        // Trigger a GB Studio / hUGETracker style Noise SFX (like interacting with the pliers on the wall):
+        // NR42 (0xFF21) = 0xF1 (Initial volume = 15, direction = 0 decrease, period = 1)
+        // NR43 (0xFF22) = 0x52 (Noise clock shift & divisor)
+        // NR44 (0xFF23) = 0x80 (Trigger = 1, Length counter enable = 0!)
+        apu.writeRegister(0xFF21, 0xF1)
+        apu.writeRegister(0xFF22, 0x52)
+        apu.writeRegister(0xFF23, 0x80)
+
+        assertTrue("Channel 4 must be enabled immediately upon trigger", apu.ch4Enabled)
+        assertEquals("Channel 4 must start at volume 15", 15, apu.ch4Volume)
+
+        // Step 1 frame (~70224 T-cycles): noise must be audible during the sound effect
+        apu.clearFrameSamples()
+        apu.step(70224)
+        val initialNonZeroSamples = (0 until apu.samplesProduced).count { apu.sampleBuffer[it].toInt() != 0 }
+        assertTrue("Noise SFX must produce audible samples initially", initialNonZeroSamples > 100)
+
+        // Step 20 more frames (~0.33 seconds): 64Hz envelope must decay ch4Volume from 15 down to 0
+        repeat(20) {
+            apu.clearFrameSamples()
+            apu.step(70224)
+        }
+
+        assertEquals("Channel 4 volume must decay completely to 0 via 64Hz envelope", 0, apu.ch4Volume)
+
+        // Next frame must be 100% silent (zero stuck white noise!)
+        apu.clearFrameSamples()
+        apu.step(70224)
+        val stuckNoiseSamples = (0 until apu.samplesProduced).count { apu.sampleBuffer[it].toInt() != 0 }
+        assertEquals("Channel 4 must produce 0 residual noise after envelope decay", 0, stuckNoiseSamples)
+    }
+
+    @Test
+    fun `validate Version 15 APU NR51 stereo panning mute and Save State audio restoration`() {
+        val core = GbcEmulatorCore(createSyntheticGbcRomZipBytes())
+        val apu = core.apu
+
+        // Trigger Channel 4 noise with constant envelope (0xF0) routed to L+R via NR51 (0xFF25 = 0x88)
+        apu.writeRegister(0xFF25, 0x88)
+        apu.writeRegister(0xFF21, 0xF0)
+        apu.writeRegister(0xFF22, 0x31)
+        apu.writeRegister(0xFF23, 0x80)
+
+        apu.clearFrameSamples()
+        apu.step(70224)
+        assertTrue("Channel 4 routed in NR51 must produce non-zero samples", (0 until apu.samplesProduced).any { apu.sampleBuffer[it].toInt() != 0 })
+
+        // Mute Channel 4 via NR51 (0xFF25 = 0x00, disconnecting it from Left and Right outputs)
+        apu.writeRegister(0xFF25, 0x00)
+        apu.clearFrameSamples()
+        apu.step(70224)
+        assertTrue("Channel 4 disconnected in NR51 must produce complete silence", (0 until apu.samplesProduced).all { apu.sampleBuffer[it].toInt() == 0 })
+
+        // Restore NR51 and trigger a decaying noise SFX right before a Quick Save
+        apu.writeRegister(0xFF25, 0xF3)
+        apu.writeRegister(0xFF21, 0xF1)
+        apu.writeRegister(0xFF23, 0x80)
+        assertEquals(15, apu.ch4Volume)
+
+        val savedState = core.serializeState()
+
+        // Advance until noise has decayed to 0
+        repeat(25) { core.runSingleFrame() }
+        assertEquals(0, core.apu.ch4Volume)
+
+        // Quick Load the state that was saved mid-SFX and verify the SFX finishes decaying to 0 cleanly
+        assertTrue(core.deserializeState(savedState))
+        repeat(25) { core.runSingleFrame() }
+        assertEquals("Restored mid-SFX state must still decay ch4Volume to 0", 0, core.apu.ch4Volume)
+    }
+
+    @Test
+    fun `validate Version 15 Channel 1 frequency sweep overflow and legacy save state audio cleanup`() {
+        val core = GbcEmulatorCore(createSyntheticGbcRomZipBytes())
+        val apu = core.apu
+
+        // Configure Channel 1 with upward frequency sweep that overflows 2047:
+        // NR10 (0xFF10) = 0x11 (period = 1, direction = 0 addition, shift = 1)
+        // NR12 (0xFF12) = 0xF0 (volume = 15, period = 0)
+        // NR13 (0xFF13) = 0xFF, NR14 (0xFF14) = 0x85 -> freq = 0x5FF (1535); 1535 + (1535 >> 1) = 2302 > 2047!
+        apu.writeRegister(0xFF10, 0x11)
+        apu.writeRegister(0xFF12, 0xF0)
+        apu.writeRegister(0xFF13, 0xFF)
+        apu.writeRegister(0xFF14, 0x85)
+
+        assertFalse("Channel 1 must auto-disable immediately upon sweep overflow (> 2047)", apu.ch1Enabled)
+
+        // Simulate a legacy save state (without APU2 block) where NR42 had 0xF1 written
+        val legacyBos = ByteArrayOutputStream()
+        java.util.zip.GZIPOutputStream(legacyBos).use { gzip ->
+            java.io.DataOutputStream(gzip).use { out ->
+                out.writeInt(0x4E474243)
+                out.writeInt(1)
+                out.writeLong(core.framesExecuted)
+                core.cartridge.saveState(out)
+                core.ppu.saveState(out)
+                core.apu.writeRegister(0xFF21, 0xF1)
+                core.apu.writeRegister(0xFF23, 0x80)
+                core.apu.saveState(out)
+                core.mmu.saveState(out)
+                core.cpu.saveState(out)
+            }
+        }
+        assertTrue(core.deserializeState(legacyBos.toByteArray()))
+        assertFalse("Legacy save state load must silence stuck transient Channel 4 noise", core.apu.ch4Enabled)
+        assertEquals(0, core.apu.ch4Volume)
+    }
 }
+
