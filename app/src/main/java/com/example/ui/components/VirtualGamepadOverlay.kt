@@ -396,10 +396,12 @@ fun VirtualGamepadOverlay(
         start: Boolean,
         select: Boolean
     ) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showVirtualControls: Boolean = true
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val controlsVisible = showVirtualControls || isEditing
 
     var selectedGroup by remember { mutableStateOf(EditableControlGroup.DPAD) }
     var editorMinimized by remember { mutableStateOf(false) }
@@ -420,6 +422,19 @@ fun VirtualGamepadOverlay(
     var btnB by remember { mutableStateOf(false) }
     var btnStart by remember { mutableStateOf(false) }
     var btnSelect by remember { mutableStateOf(false) }
+
+    androidx.compose.runtime.LaunchedEffect(controlsVisible) {
+        if (!controlsVisible) {
+            dpadUp = false
+            dpadDown = false
+            dpadLeft = false
+            dpadRight = false
+            btnA = false
+            btnB = false
+            btnStart = false
+            btnSelect = false
+        }
+    }
 
     BoxWithConstraints(
         modifier = modifier
@@ -572,201 +587,205 @@ fun VirtualGamepadOverlay(
             )
         )
 
-        val touchInteractionModifier = Modifier.pointerInput(isEditing, widthPx, heightPx) {
-            if (isEditing) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val touchPt = down.position
-                    val centers = currentCenters
-                    val halfSizes = currentHalfSizes
-
-                    val curDpadCenter = centers.getValue(EditableControlGroup.DPAD)
-                    val curDpadR = halfSizes.getValue(EditableControlGroup.DPAD).first
-                    val curAbCenter = centers.getValue(EditableControlGroup.AB_BUTTONS)
-                    val (curAbHalfW, curAbHalfH) = halfSizes.getValue(EditableControlGroup.AB_BUTTONS)
-                    val curSsCenter = centers.getValue(EditableControlGroup.START_SELECT)
-                    val (curSsHalfW, curSsHalfH) = halfSizes.getValue(EditableControlGroup.START_SELECT)
-                    val curTurboCenter = centers.getValue(EditableControlGroup.TURBO)
-                    val (curTurboHalfW, curTurboHalfH) = halfSizes.getValue(EditableControlGroup.TURBO)
-
-                    val hitGroup: EditableControlGroup? = when {
-                        abs(touchPt.x - curTurboCenter.x) <= curTurboHalfW * 1.15f &&
-                            abs(touchPt.y - curTurboCenter.y) <= curTurboHalfH * 1.35f ->
-                            EditableControlGroup.TURBO
-                        abs(touchPt.x - curSsCenter.x) <= curSsHalfW * 1.2f &&
-                            abs(touchPt.y - curSsCenter.y) <= curSsHalfH * 1.4f ->
-                            EditableControlGroup.START_SELECT
-                        abs(touchPt.x - curAbCenter.x) <= curAbHalfW * 1.15f &&
-                            abs(touchPt.y - curAbCenter.y) <= curAbHalfH * 1.25f ->
-                            EditableControlGroup.AB_BUTTONS
-                        hypot(touchPt.x - curDpadCenter.x, touchPt.y - curDpadCenter.y) <= curDpadR * 1.25f ->
-                            EditableControlGroup.DPAD
-                        else -> null
-                    }
-
-                    if (hitGroup != null) {
-                        selectedGroup = hitGroup
-                        down.consume()
-
-                        var lastValidCenter = centers.getValue(hitGroup)
-                        val grabOffset = touchPt - lastValidCenter
-
-                        do {
-                            val event = awaitPointerEvent(PointerEventPass.Main)
-                            val dragChange = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
-                            if (dragChange != null && dragChange.pressed) {
-                                dragChange.consume()
-                                val rawTarget = dragChange.position - grabOffset
-                                val latest = currentLayout
-                                val latestCenters = currentCenters
-                                val latestHalfSizes = currentHalfSizes
-                                val (halfW, halfH) = latestHalfSizes.getValue(hitGroup)
-
-                                val obstacleRects = EditableControlGroup.entries
-                                    .filter { it != hitGroup }
-                                    .map { other ->
-                                        val c = latestCenters.getValue(other)
-                                        val (hw, hh) = latestHalfSizes.getValue(other)
-                                        Rect(c.x - hw, c.y - hh, c.x + hw, c.y + hh)
-                                    }
-
-                                val resolvedCenterPx = resolveNonOverlappingControlCenter(
-                                    desiredCenterPx = rawTarget,
-                                    fallbackCenterPx = lastValidCenter,
-                                    halfW = halfW,
-                                    halfH = halfH,
-                                    screenW = widthPx,
-                                    screenH = heightPx,
-                                    gameRect = currentGameRect,
-                                    topHudHeightPx = currentTopHudPx,
-                                    isLandscape = isLandscape,
-                                    otherControlRects = obstacleRects
-                                )
-                                lastValidCenter = resolvedCenterPx
-
-                                val nx = (resolvedCenterPx.x / widthPx).coerceIn(0f, 1f)
-                                val ny = (resolvedCenterPx.y / heightPx).coerceIn(0f, 1f)
-
-                                val updated = when (hitGroup) {
-                                    EditableControlGroup.DPAD -> latest.copy(dpadX = nx, dpadY = ny)
-                                    EditableControlGroup.AB_BUTTONS -> latest.copy(abX = nx, abY = ny)
-                                    EditableControlGroup.START_SELECT -> latest.copy(startSelectX = nx, startSelectY = ny)
-                                    EditableControlGroup.TURBO -> latest.copy(turboX = nx, turboY = ny)
-                                }
-                                currentOnLayoutChange(updated)
-                            }
-                        } while (event.changes.any { it.pressed })
-                    }
-                }
-            } else {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Main)
-                        val activePointers = event.changes.filter { it.pressed }.map { it.position }
-                        val snap = currentLayout
+        val touchInteractionModifier = if (controlsVisible) {
+            Modifier.pointerInput(isEditing, controlsVisible, widthPx, heightPx) {
+                if (isEditing) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val touchPt = down.position
                         val centers = currentCenters
                         val halfSizes = currentHalfSizes
 
                         val curDpadCenter = centers.getValue(EditableControlGroup.DPAD)
-                        val curDpadRadiusPx = halfSizes.getValue(EditableControlGroup.DPAD).first
-
+                        val curDpadR = halfSizes.getValue(EditableControlGroup.DPAD).first
                         val curAbCenter = centers.getValue(EditableControlGroup.AB_BUTTONS)
-                        val sAb = (halfSizes.getValue(EditableControlGroup.AB_BUTTONS).first * 2f) /
-                            with(density) { abBaseW.toPx() }
-                        val curBtnRadiusPx = with(density) { (31.dp * sAb).toPx() }
-                        val curBCenter = Offset(
-                            curAbCenter.x - with(density) { (33.dp * sAb).toPx() },
-                            curAbCenter.y + with(density) { (12.dp * sAb).toPx() }
-                        )
-                        val curACenter = Offset(
-                            curAbCenter.x + with(density) { (33.dp * sAb).toPx() },
-                            curAbCenter.y - with(density) { (12.dp * sAb).toPx() }
-                        )
-
+                        val (curAbHalfW, curAbHalfH) = halfSizes.getValue(EditableControlGroup.AB_BUTTONS)
                         val curSsCenter = centers.getValue(EditableControlGroup.START_SELECT)
-                        val sSs = (halfSizes.getValue(EditableControlGroup.START_SELECT).first * 2f) /
-                            with(density) { ssBaseW.toPx() }
-                        val curSelectCenter = Offset(
-                            curSsCenter.x - with(density) { (32.dp * sSs).toPx() },
-                            curSsCenter.y
-                        )
-                        val curStartCenter = Offset(
-                            curSsCenter.x + with(density) { (32.dp * sSs).toPx() },
-                            curSsCenter.y
-                        )
-                        val curSsHitRadiusPx = with(density) { (28.dp * sSs).toPx() }
+                        val (curSsHalfW, curSsHalfH) = halfSizes.getValue(EditableControlGroup.START_SELECT)
+                        val curTurboCenter = centers.getValue(EditableControlGroup.TURBO)
+                        val (curTurboHalfW, curTurboHalfH) = halfSizes.getValue(EditableControlGroup.TURBO)
 
-                        var newUp = false
-                        var newDown = false
-                        var newLeft = false
-                        var newRight = false
-                        var newA = false
-                        var newB = false
-                        var newStart = false
-                        var newSelect = false
+                        val hitGroup: EditableControlGroup? = when {
+                            abs(touchPt.x - curTurboCenter.x) <= curTurboHalfW * 1.15f &&
+                                abs(touchPt.y - curTurboCenter.y) <= curTurboHalfH * 1.35f ->
+                                EditableControlGroup.TURBO
+                            abs(touchPt.x - curSsCenter.x) <= curSsHalfW * 1.2f &&
+                                abs(touchPt.y - curSsCenter.y) <= curSsHalfH * 1.4f ->
+                                EditableControlGroup.START_SELECT
+                            abs(touchPt.x - curAbCenter.x) <= curAbHalfW * 1.15f &&
+                                abs(touchPt.y - curAbCenter.y) <= curAbHalfH * 1.25f ->
+                                EditableControlGroup.AB_BUTTONS
+                            hypot(touchPt.x - curDpadCenter.x, touchPt.y - curDpadCenter.y) <= curDpadR * 1.25f ->
+                                EditableControlGroup.DPAD
+                            else -> null
+                        }
 
-                        for (pt in activePointers) {
-                            val dx = pt.x - curDpadCenter.x
-                            val dy = pt.y - curDpadCenter.y
-                            val distDpad = hypot(dx, dy)
-                            if (distDpad <= curDpadRadiusPx * 1.25f) {
-                                val deadzonePx = curDpadRadiusPx * snap.dpadDeadzone
-                                if (distDpad > deadzonePx) {
-                                    val normX = dx / distDpad
-                                    val normY = dy / distDpad
-                                    if (normX < -0.38f) newLeft = true
-                                    if (normX > 0.38f) newRight = true
-                                    if (normY < -0.38f) newUp = true
-                                    if (normY > 0.38f) newDown = true
+                        if (hitGroup != null) {
+                            selectedGroup = hitGroup
+                            down.consume()
+
+                            var lastValidCenter = centers.getValue(hitGroup)
+                            val grabOffset = touchPt - lastValidCenter
+
+                            do {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val dragChange = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
+                                if (dragChange != null && dragChange.pressed) {
+                                    dragChange.consume()
+                                    val rawTarget = dragChange.position - grabOffset
+                                    val latest = currentLayout
+                                    val latestCenters = currentCenters
+                                    val latestHalfSizes = currentHalfSizes
+                                    val (halfW, halfH) = latestHalfSizes.getValue(hitGroup)
+
+                                    val obstacleRects = EditableControlGroup.entries
+                                        .filter { it != hitGroup }
+                                        .map { other ->
+                                            val c = latestCenters.getValue(other)
+                                            val (hw, hh) = latestHalfSizes.getValue(other)
+                                            Rect(c.x - hw, c.y - hh, c.x + hw, c.y + hh)
+                                        }
+
+                                    val resolvedCenterPx = resolveNonOverlappingControlCenter(
+                                        desiredCenterPx = rawTarget,
+                                        fallbackCenterPx = lastValidCenter,
+                                        halfW = halfW,
+                                        halfH = halfH,
+                                        screenW = widthPx,
+                                        screenH = heightPx,
+                                        gameRect = currentGameRect,
+                                        topHudHeightPx = currentTopHudPx,
+                                        isLandscape = isLandscape,
+                                        otherControlRects = obstacleRects
+                                    )
+                                    lastValidCenter = resolvedCenterPx
+
+                                    val nx = (resolvedCenterPx.x / widthPx).coerceIn(0f, 1f)
+                                    val ny = (resolvedCenterPx.y / heightPx).coerceIn(0f, 1f)
+
+                                    val updated = when (hitGroup) {
+                                        EditableControlGroup.DPAD -> latest.copy(dpadX = nx, dpadY = ny)
+                                        EditableControlGroup.AB_BUTTONS -> latest.copy(abX = nx, abY = ny)
+                                        EditableControlGroup.START_SELECT -> latest.copy(startSelectX = nx, startSelectY = ny)
+                                        EditableControlGroup.TURBO -> latest.copy(turboX = nx, turboY = ny)
+                                    }
+                                    currentOnLayoutChange(updated)
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
+                    }
+                } else {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val activePointers = event.changes.filter { it.pressed }.map { it.position }
+                            val snap = currentLayout
+                            val centers = currentCenters
+                            val halfSizes = currentHalfSizes
+
+                            val curDpadCenter = centers.getValue(EditableControlGroup.DPAD)
+                            val curDpadRadiusPx = halfSizes.getValue(EditableControlGroup.DPAD).first
+
+                            val curAbCenter = centers.getValue(EditableControlGroup.AB_BUTTONS)
+                            val sAb = (halfSizes.getValue(EditableControlGroup.AB_BUTTONS).first * 2f) /
+                                with(density) { abBaseW.toPx() }
+                            val curBtnRadiusPx = with(density) { (31.dp * sAb).toPx() }
+                            val curBCenter = Offset(
+                                curAbCenter.x - with(density) { (33.dp * sAb).toPx() },
+                                curAbCenter.y + with(density) { (12.dp * sAb).toPx() }
+                            )
+                            val curACenter = Offset(
+                                curAbCenter.x + with(density) { (33.dp * sAb).toPx() },
+                                curAbCenter.y - with(density) { (12.dp * sAb).toPx() }
+                            )
+
+                            val curSsCenter = centers.getValue(EditableControlGroup.START_SELECT)
+                            val sSs = (halfSizes.getValue(EditableControlGroup.START_SELECT).first * 2f) /
+                                with(density) { ssBaseW.toPx() }
+                            val curSelectCenter = Offset(
+                                curSsCenter.x - with(density) { (32.dp * sSs).toPx() },
+                                curSsCenter.y
+                            )
+                            val curStartCenter = Offset(
+                                curSsCenter.x + with(density) { (32.dp * sSs).toPx() },
+                                curSsCenter.y
+                            )
+                            val curSsHitRadiusPx = with(density) { (28.dp * sSs).toPx() }
+
+                            var newUp = false
+                            var newDown = false
+                            var newLeft = false
+                            var newRight = false
+                            var newA = false
+                            var newB = false
+                            var newStart = false
+                            var newSelect = false
+
+                            for (pt in activePointers) {
+                                val dx = pt.x - curDpadCenter.x
+                                val dy = pt.y - curDpadCenter.y
+                                val distDpad = hypot(dx, dy)
+                                if (distDpad <= curDpadRadiusPx * 1.25f) {
+                                    val deadzonePx = curDpadRadiusPx * snap.dpadDeadzone
+                                    if (distDpad > deadzonePx) {
+                                        val normX = dx / distDpad
+                                        val normY = dy / distDpad
+                                        if (normX < -0.38f) newLeft = true
+                                        if (normX > 0.38f) newRight = true
+                                        if (normY < -0.38f) newUp = true
+                                        if (normY > 0.38f) newDown = true
+                                    }
+                                }
+
+                                if (hypot(pt.x - curBCenter.x, pt.y - curBCenter.y) <= curBtnRadiusPx * 1.22f) newB = true
+                                if (hypot(pt.x - curACenter.x, pt.y - curACenter.y) <= curBtnRadiusPx * 1.22f) newA = true
+
+                                if (hypot(pt.x - curSelectCenter.x, pt.y - curSelectCenter.y) <= curSsHitRadiusPx) {
+                                    newSelect = true
+                                }
+                                if (hypot(pt.x - curStartCenter.x, pt.y - curStartCenter.y) <= curSsHitRadiusPx) {
+                                    newStart = true
                                 }
                             }
 
-                            if (hypot(pt.x - curBCenter.x, pt.y - curBCenter.y) <= curBtnRadiusPx * 1.22f) newB = true
-                            if (hypot(pt.x - curACenter.x, pt.y - curACenter.y) <= curBtnRadiusPx * 1.22f) newA = true
+                            val newlyPressed = (newUp && !dpadUp) ||
+                                (newDown && !dpadDown) ||
+                                (newLeft && !dpadLeft) ||
+                                (newRight && !dpadRight) ||
+                                (newA && !btnA) ||
+                                (newB && !btnB) ||
+                                (newStart && !btnStart) ||
+                                (newSelect && !btnSelect)
 
-                            if (hypot(pt.x - curSelectCenter.x, pt.y - curSelectCenter.y) <= curSsHitRadiusPx) {
-                                newSelect = true
+                            if (newlyPressed && snap.hapticEnabled) {
+                                triggerHapticPulse(context, snap.hapticIntensity)
                             }
-                            if (hypot(pt.x - curStartCenter.x, pt.y - curStartCenter.y) <= curSsHitRadiusPx) {
-                                newStart = true
-                            }
+
+                            dpadUp = newUp
+                            dpadDown = newDown
+                            dpadLeft = newLeft
+                            dpadRight = newRight
+                            btnA = newA
+                            btnB = newB
+                            btnStart = newStart
+                            btnSelect = newSelect
+
+                            currentOnInputChanged(
+                                newUp,
+                                newDown,
+                                newLeft,
+                                newRight,
+                                newA,
+                                newB,
+                                newStart,
+                                newSelect
+                            )
                         }
-
-                        val newlyPressed = (newUp && !dpadUp) ||
-                            (newDown && !dpadDown) ||
-                            (newLeft && !dpadLeft) ||
-                            (newRight && !dpadRight) ||
-                            (newA && !btnA) ||
-                            (newB && !btnB) ||
-                            (newStart && !btnStart) ||
-                            (newSelect && !btnSelect)
-
-                        if (newlyPressed && snap.hapticEnabled) {
-                            triggerHapticPulse(context, snap.hapticIntensity)
-                        }
-
-                        dpadUp = newUp
-                        dpadDown = newDown
-                        dpadLeft = newLeft
-                        dpadRight = newRight
-                        btnA = newA
-                        btnB = newB
-                        btnStart = newStart
-                        btnSelect = newSelect
-
-                        currentOnInputChanged(
-                            newUp,
-                            newDown,
-                            newLeft,
-                            newRight,
-                            newA,
-                            newB,
-                            newStart,
-                            newSelect
-                        )
                     }
                 }
             }
+        } else {
+            Modifier
         }
 
         Box(
@@ -774,92 +793,94 @@ fun VirtualGamepadOverlay(
                 .fillMaxSize()
                 .then(touchInteractionModifier)
         ) {
-            // 1. D-Pad Visual (with independent dpadOpacity)
-            Box(
-                modifier = Modifier
-                    .offset {
-                        IntOffset(
-                            (dpadCenter.x - dpadRadiusPx).roundToInt(),
-                            (dpadCenter.y - dpadRadiusPx).roundToInt()
-                        )
-                    }
-                    .size(dpadSizeDp)
-                    .alpha(layout.dpadOpacity.coerceIn(0.20f, 1.0f))
-                    .then(
-                        if (isEditing) {
-                            Modifier.border(
-                                width = if (selectedGroup == EditableControlGroup.DPAD) 2.5.dp else 1.5.dp,
-                                color = if (selectedGroup == EditableControlGroup.DPAD) NeonCyan else AtomicPurple,
-                                shape = RoundedCornerShape(16.dp)
+            if (controlsVisible) {
+                // 1. D-Pad Visual (with independent dpadOpacity)
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (dpadCenter.x - dpadRadiusPx).roundToInt(),
+                                (dpadCenter.y - dpadRadiusPx).roundToInt()
                             )
-                        } else Modifier
+                        }
+                        .size(dpadSizeDp)
+                        .alpha(layout.dpadOpacity.coerceIn(0.20f, 1.0f))
+                        .then(
+                            if (isEditing) {
+                                Modifier.border(
+                                    width = if (selectedGroup == EditableControlGroup.DPAD) 2.5.dp else 1.5.dp,
+                                    color = if (selectedGroup == EditableControlGroup.DPAD) NeonCyan else AtomicPurple,
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                            } else Modifier
+                        )
+                        .testTag("virtual_dpad")
+                ) {
+                    DpadCanvas(
+                        upPressed = dpadUp,
+                        downPressed = dpadDown,
+                        leftPressed = dpadLeft,
+                        rightPressed = dpadRight
                     )
-                    .testTag("virtual_dpad")
-            ) {
-                DpadCanvas(
-                    upPressed = dpadUp,
-                    downPressed = dpadDown,
-                    leftPressed = dpadLeft,
-                    rightPressed = dpadRight
-                )
-            }
+                }
 
-            // 2. B / A Buttons Cluster (with independent abOpacity)
-            Box(
-                modifier = Modifier
-                    .offset {
-                        IntOffset(
-                            (abCenter.x - abWpx / 2f).roundToInt(),
-                            (abCenter.y - abHpx / 2f).roundToInt()
-                        )
-                    }
-                    .size(abWidthDp, abHeightDp)
-                    .alpha(layout.abOpacity.coerceIn(0.20f, 1.0f))
-                    .then(
-                        if (isEditing) {
-                            Modifier.border(
-                                width = if (selectedGroup == EditableControlGroup.AB_BUTTONS) 2.5.dp else 1.5.dp,
-                                color = if (selectedGroup == EditableControlGroup.AB_BUTTONS) NeonCyan else AtomicPurple,
-                                shape = RoundedCornerShape(16.dp)
+                // 2. B / A Buttons Cluster (with independent abOpacity)
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (abCenter.x - abWpx / 2f).roundToInt(),
+                                (abCenter.y - abHpx / 2f).roundToInt()
                             )
-                        } else Modifier
+                        }
+                        .size(abWidthDp, abHeightDp)
+                        .alpha(layout.abOpacity.coerceIn(0.20f, 1.0f))
+                        .then(
+                            if (isEditing) {
+                                Modifier.border(
+                                    width = if (selectedGroup == EditableControlGroup.AB_BUTTONS) 2.5.dp else 1.5.dp,
+                                    color = if (selectedGroup == EditableControlGroup.AB_BUTTONS) NeonCyan else AtomicPurple,
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                            } else Modifier
+                        )
+                        .testTag("virtual_ab_cluster")
+                ) {
+                    AbButtonsCanvas(
+                        aPressed = btnA,
+                        bPressed = btnB,
+                        scale = effAbScale
                     )
-                    .testTag("virtual_ab_cluster")
-            ) {
-                AbButtonsCanvas(
-                    aPressed = btnA,
-                    bPressed = btnB,
-                    scale = effAbScale
-                )
-            }
+                }
 
-            // 3. Select / Start Cluster (with independent startSelectOpacity)
-            Box(
-                modifier = Modifier
-                    .offset {
-                        IntOffset(
-                            (ssCenter.x - ssWpx / 2f).roundToInt(),
-                            (ssCenter.y - ssHpx / 2f).roundToInt()
-                        )
-                    }
-                    .size(ssWidthDp, ssHeightDp)
-                    .alpha(layout.startSelectOpacity.coerceIn(0.20f, 1.0f))
-                    .then(
-                        if (isEditing) {
-                            Modifier.border(
-                                width = if (selectedGroup == EditableControlGroup.START_SELECT) 2.5.dp else 1.5.dp,
-                                color = if (selectedGroup == EditableControlGroup.START_SELECT) NeonCyan else AtomicPurple,
-                                shape = RoundedCornerShape(12.dp)
+                // 3. Select / Start Cluster (with independent startSelectOpacity)
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (ssCenter.x - ssWpx / 2f).roundToInt(),
+                                (ssCenter.y - ssHpx / 2f).roundToInt()
                             )
-                        } else Modifier
+                        }
+                        .size(ssWidthDp, ssHeightDp)
+                        .alpha(layout.startSelectOpacity.coerceIn(0.20f, 1.0f))
+                        .then(
+                            if (isEditing) {
+                                Modifier.border(
+                                    width = if (selectedGroup == EditableControlGroup.START_SELECT) 2.5.dp else 1.5.dp,
+                                    color = if (selectedGroup == EditableControlGroup.START_SELECT) NeonCyan else AtomicPurple,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            } else Modifier
+                        )
+                        .testTag("virtual_start_select")
+                ) {
+                    StartSelectCanvas(
+                        selectPressed = btnSelect,
+                        startPressed = btnStart,
+                        scale = effSsScale
                     )
-                    .testTag("virtual_start_select")
-            ) {
-                StartSelectCanvas(
-                    selectPressed = btnSelect,
-                    startPressed = btnStart,
-                    scale = effSsScale
-                )
+                }
             }
 
             // 4. Rectangular Turbo & Quick Action Bar ([>> TURBO] [Pause] [Screenshot] [Save] [Load] [Audio])

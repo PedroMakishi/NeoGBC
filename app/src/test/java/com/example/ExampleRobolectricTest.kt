@@ -393,12 +393,40 @@ class ExampleRobolectricTest {
             assertTrue("Save state bytes must be readable after reconciliation", stateBytes != null && stateBytes.isNotEmpty())
         }
 
-        // 10. Verify Bluetooth Controller Quick Load Confirmation ("B" cancels, "A" confirms) & Motion Axes
+        // 10. Verify Bluetooth Controller Auto-Hide Virtual Controls, Quick Load Confirmation ("B" cancels, "A" confirms) & Auto-Restore on Disconnect
+        // Before Bluetooth controller input, virtual controls are visible on screen
+        assertTrue(
+            "Bluetooth controller must start as not connected before physical input",
+            !vm.sessionState.value.isBluetoothControllerConnected
+        )
+        composeTestRule.onNodeWithTag("virtual_dpad").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("virtual_ab_cluster").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("virtual_start_select").assertIsDisplayed()
+
         // Remap B to custom keycode KEYCODE_BUTTON_C and A to custom keycode KEYCODE_BUTTON_Z to prove custom mappings work
         vm.startRemappingButton(com.example.viewmodel.GbcButton.B)
         assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_C, true))
         vm.startRemappingButton(com.example.viewmodel.GbcButton.A)
         assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_Z, true))
+        composeTestRule.waitForIdle()
+
+        // Upon detecting Bluetooth controller input, virtual controls must automatically hide
+        assertTrue(
+            "Bluetooth controller must be marked connected upon detecting controller input",
+            vm.sessionState.value.isBluetoothControllerConnected
+        )
+        assertTrue(
+            "virtual_dpad must be automatically hidden when Bluetooth controller is active",
+            composeTestRule.onAllNodesWithTag("virtual_dpad").fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "virtual_ab_cluster must be automatically hidden when Bluetooth controller is active",
+            composeTestRule.onAllNodesWithTag("virtual_ab_cluster").fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "virtual_start_select must be automatically hidden when Bluetooth controller is active",
+            composeTestRule.onAllNodesWithTag("virtual_start_select").fetchSemanticsNodes().isEmpty()
+        )
 
         // Trigger Quick Load via Bluetooth controller (L2)
         assertTrue(vm.handlePhysicalKeyEvent(android.view.KeyEvent.KEYCODE_BUTTON_L2, true))
@@ -444,5 +472,31 @@ class ExampleRobolectricTest {
         )
         vm.handleGamepadMotionAxes(hatX = 0f, hatY = 0f, stickX = 0f, stickY = 0f)
         vm.resetKeyMappings()
+
+        // Simulate Bluetooth controller disconnection -> virtual controls must automatically reappear!
+        vm.onExternalControllerConnectionChanged(false)
+        composeTestRule.waitForIdle()
+        assertTrue(
+            "Bluetooth controller must be marked disconnected after disconnect event",
+            !vm.sessionState.value.isBluetoothControllerConnected
+        )
+        composeTestRule.onNodeWithTag("virtual_dpad").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("virtual_ab_cluster").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("virtual_start_select").assertIsDisplayed()
+
+        // Simulate Bluetooth motion axis input -> virtual controls must automatically hide again!
+        assertTrue(vm.handleGamepadMotionAxes(hatX = 0f, hatY = 0f, stickX = -0.8f, stickY = 0f))
+        composeTestRule.waitForIdle()
+        assertTrue(
+            "Bluetooth controller must re-activate when analog/hat axis input is detected",
+            vm.sessionState.value.isBluetoothControllerConnected
+        )
+        assertTrue(
+            "virtual_dpad must hide again upon Bluetooth axis input",
+            composeTestRule.onAllNodesWithTag("virtual_dpad").fetchSemanticsNodes().isEmpty()
+        )
+        vm.onExternalControllerConnectionChanged(false)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("virtual_dpad").assertIsDisplayed()
     }
 }

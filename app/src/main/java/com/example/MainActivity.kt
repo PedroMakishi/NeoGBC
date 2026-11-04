@@ -1,9 +1,17 @@
 package com.example
 
 import android.app.Activity
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -23,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -37,6 +46,88 @@ class MainActivity : ComponentActivity() {
 
     internal val viewModel: NeoGbcViewModel by viewModels()
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var inputManager: InputManager? = null
+    private var isBluetoothReceiverRegistered = false
+
+    private val inputDeviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) {
+            if (isExternalControllerDevice(InputDevice.getDevice(deviceId)) || hasConnectedExternalController()) {
+                viewModel.onExternalControllerConnectionChanged(true)
+            }
+        }
+
+        override fun onInputDeviceRemoved(deviceId: Int) {
+            if (!hasConnectedExternalController()) {
+                viewModel.onExternalControllerConnectionChanged(false)
+            }
+        }
+
+        override fun onInputDeviceChanged(deviceId: Int) {
+            viewModel.onExternalControllerConnectionChanged(hasConnectedExternalController())
+        }
+    }
+
+    private val bluetoothConnectionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                    if (!hasConnectedExternalController()) {
+                        viewModel.onExternalControllerConnectionChanged(false)
+                    } else {
+                        // HID InputDevice removal can lag ACL disconnect by a few milliseconds
+                        mainHandler.postDelayed({
+                            if (!hasConnectedExternalController()) {
+                                viewModel.onExternalControllerConnectionChanged(false)
+                            }
+                        }, 250L)
+                    }
+                }
+                BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    if (hasConnectedExternalController()) {
+                        viewModel.onExternalControllerConnectionChanged(true)
+                    } else {
+                        mainHandler.postDelayed({
+                            if (hasConnectedExternalController()) {
+                                viewModel.onExternalControllerConnectionChanged(true)
+                            }
+                        }, 250L)
+                    }
+                }
+                BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED -> {
+                    val state = intent.getIntExtra(
+                        BluetoothAdapter.EXTRA_CONNECTION_STATE,
+                        BluetoothAdapter.STATE_DISCONNECTED
+                    )
+                    if (state == BluetoothAdapter.STATE_DISCONNECTED && !hasConnectedExternalController()) {
+                        viewModel.onExternalControllerConnectionChanged(false)
+                    } else if (state == BluetoothAdapter.STATE_CONNECTED && hasConnectedExternalController()) {
+                        viewModel.onExternalControllerConnectionChanged(true)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isExternalControllerDevice(device: InputDevice?): Boolean {
+        if (device == null || device.isVirtual) return false
+        val sources = device.sources
+        val isGamepadOrJoystick =
+            (sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+        return isGamepadOrJoystick
+    }
+
+    internal fun hasConnectedExternalController(): Boolean {
+        val ids = InputDevice.getDeviceIds()
+        for (id in ids) {
+            if (isExternalControllerDevice(InputDevice.getDevice(id))) {
+                return true
+            }
+        }
+        return false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -46,6 +137,29 @@ class MainActivity : ComponentActivity() {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
+        }
+
+        inputManager = getSystemService(Context.INPUT_SERVICE) as? InputManager
+        inputManager?.registerInputDeviceListener(inputDeviceListener, mainHandler)
+
+        try {
+            val filter = IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
+            }
+            ContextCompat.registerReceiver(
+                this,
+                bluetoothConnectionReceiver,
+                filter,
+                ContextCompat.RECEIVER_EXPORTED
+            )
+            isBluetoothReceiverRegistered = true
+        } catch (_: Exception) {
+        }
+
+        if (hasConnectedExternalController()) {
+            viewModel.onExternalControllerConnectionChanged(true)
         }
 
         setContent {
@@ -156,12 +270,30 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (hasConnectedExternalController()) {
+            viewModel.onExternalControllerConnectionChanged(true)
+        } else if (viewModel.sessionState.value.isBluetoothControllerConnected) {
+            viewModel.onExternalControllerConnectionChanged(false)
+        }
         viewModel.onAppResumed()
     }
 
     override fun onStop() {
         super.onStop()
         viewModel.flushActiveSessionToDisk()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mainHandler.removeCallbacksAndMessages(null)
+        inputManager?.unregisterInputDeviceListener(inputDeviceListener)
+        if (isBluetoothReceiverRegistered) {
+            try {
+                unregisterReceiver(bluetoothConnectionReceiver)
+            } catch (_: Exception) {
+            }
+            isBluetoothReceiverRegistered = false
+        }
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {

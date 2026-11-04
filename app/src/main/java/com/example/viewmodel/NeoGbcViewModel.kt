@@ -82,6 +82,7 @@ data class EmulatorSessionState(
     val dmgPalette: DmgPalettePreset = DmgPalettePreset.CLASSIC_GREEN,
     val customPaletteActiveOnCgb: Boolean = false,
     val isEditingControls: Boolean = false,
+    val isBluetoothControllerConnected: Boolean = false,
     val portraitLayout: ControlLayoutEntity = NeoGbcRepository.defaultControlLayout(false),
     val landscapeLayout: ControlLayoutEntity = NeoGbcRepository.defaultControlLayout(true),
     val activeModal: EmulatorModal = EmulatorModal.NONE,
@@ -624,6 +625,69 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    /**
+     * Automatically updates the Bluetooth / external gamepad connection state.
+     * - When connected (or when Bluetooth controller input is detected): disables on-screen virtual controls
+     *   and clears any held virtual touch buttons.
+     * - When disconnected: immediately restores on-screen virtual controls and clears any held physical/axis inputs.
+     */
+    fun onExternalControllerConnectionChanged(connected: Boolean) {
+        val current = _sessionState.value
+        if (current.isBluetoothControllerConnected == connected) return
+
+        if (connected) {
+            // Clear touch states so no virtual button remains pressed while hidden
+            touchUp = false
+            touchDown = false
+            touchLeft = false
+            touchRight = false
+            touchA = false
+            touchB = false
+            touchStart = false
+            touchSelect = false
+            pushCombinedInputsToCoreImmediate(includeLatches = true)
+
+            _sessionState.update { state ->
+                state.copy(
+                    isBluetoothControllerConnected = true,
+                    toastMessage = if (state.isRunning && state.toastMessage == null) {
+                        "Controle Bluetooth ativo • Controles virtuais ocultos"
+                    } else {
+                        state.toastMessage
+                    }
+                )
+            }
+        } else {
+            // Clear physical & axis states so no Bluetooth input remains stuck after disconnect
+            keyUp = false
+            keyDown = false
+            keyLeft = false
+            keyRight = false
+            keyA = false
+            keyB = false
+            keyStart = false
+            keySelect = false
+            axisUp = false
+            axisDown = false
+            axisLeft = false
+            axisRight = false
+            physicalTurboHeld = false
+            axisTurboHeld = false
+            pushCombinedInputsToCoreImmediate(includeLatches = false)
+
+            _sessionState.update { state ->
+                state.copy(
+                    isBluetoothControllerConnected = false,
+                    toastMessage = if (state.isRunning) {
+                        "Controle Bluetooth desconectado • Controles virtuais ativados"
+                    } else {
+                        state.toastMessage
+                    }
+                )
+            }
+        }
+    }
+
     fun updateTouchControls(
         up: Boolean,
         down: Boolean,
@@ -634,7 +698,8 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         start: Boolean,
         select: Boolean
     ) {
-        if (_sessionState.value.isEditingControls) return
+        val state = _sessionState.value
+        if (state.isEditingControls || state.isBluetoothControllerConnected) return
         if (up && !touchUp) latchUp = true
         if (down && !touchDown) latchDown = true
         if (left && !touchLeft) latchLeft = true
@@ -714,6 +779,11 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         val newUp = hatY < -deadzone || stickY < -deadzone
         val newDown = hatY > deadzone || stickY > deadzone
         val newTurbo = rightTrigger > 0.45f
+        val hasActiveAxisInput = newUp || newDown || newLeft || newRight || newTurbo || leftTrigger > 0.45f
+
+        if (hasActiveAxisInput && !state.isBluetoothControllerConnected) {
+            onExternalControllerConnectionChanged(true)
+        }
 
         // Support remapping D-Pad on Bluetooth controllers that emit Hat axis events
         val remappingBtn = state.buttonBeingRemapped
@@ -763,11 +833,15 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
 
         val remappingBtn = state.buttonBeingRemapped
         if (remappingBtn != null && isPressed) {
+            if (!state.isBluetoothControllerConnected) {
+                onExternalControllerConnectionChanged(true)
+            }
             val updatedMap = state.keyMappings.toMutableMap()
             updatedMap[remappingBtn] = keyCode
             persistKeyMappings(updatedMap)
             _sessionState.update { current ->
                 current.copy(
+                    isBluetoothControllerConnected = true,
                     keyMappings = updatedMap,
                     buttonBeingRemapped = null,
                     toastMessage = "${remappingBtn.displayName} mapeado para tecla #$keyCode"
@@ -777,6 +851,10 @@ class NeoGbcViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val matchedButton = resolveMappedButton(keyCode, state.keyMappings) ?: return false
+
+        if (!state.isBluetoothControllerConnected) {
+            onExternalControllerConnectionChanged(true)
+        }
 
         // Handle Bluetooth / Physical Gamepad actions inside the Quick Load Confirmation Modal:
         // Button mapped as "A" -> Confirm ("Carregar Save")

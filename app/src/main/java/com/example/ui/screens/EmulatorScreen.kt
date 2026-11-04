@@ -299,6 +299,7 @@ fun EmulatorScreen(
         VirtualGamepadOverlay(
             layout = activeControlLayout,
             isEditing = sessionState.isEditingControls,
+            showVirtualControls = !sessionState.isBluetoothControllerConnected || sessionState.isEditingControls,
             isPaused = sessionState.isPaused,
             isTurboActive = sessionState.isTurboEnabled,
             audioEnabled = sessionState.audioEnabled,
